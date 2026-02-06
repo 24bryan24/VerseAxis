@@ -1,0 +1,1122 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Bold, 
+  Italic, 
+  Underline, 
+  Highlighter, 
+  BookOpen, 
+  Trash2, 
+  RefreshCcw, 
+  Move,
+  X,
+  Settings,
+  EyeOff,
+  CheckSquare,
+  MousePointer2,
+  Maximize,
+  GitBranch,      
+  Activity,       
+  CornerDownRight,
+  Undo2,
+  Redo2,
+  Sparkles,
+  Loader2,
+  FileText, 
+  Layout    
+} from 'lucide-react';
+
+// --- Constants & Config ---
+
+const DEFAULT_PASSAGE = "Romans 5:1-10";
+const DEFAULT_TEXT = `Therefore, since we have been justified by faith, we have peace with God through our Lord Jesus Christ. Through him we have also obtained access by faith into this grace in which we stand, and we rejoice in hope of the glory of God. Not only that, but we rejoice in our sufferings, knowing that suffering produces endurance, and endurance produces character, and character produces hope, and hope does not put us to shame, because God's love has been poured into our hearts through the Holy Spirit who has been given to us. For while we were still weak, at the right time Christ died for the ungodly. For one will scarcely die for a righteous person—though perhaps for a good person one would dare even to die— but God shows his love for us in that while we were still sinners, Christ died for us. Since, therefore, we have now been justified by his blood, much more shall we be saved by him from the wrath of God. For if while we were enemies we were reconciled to God by the death of his Son, much more, now that we are reconciled, shall we be saved by his life.`;
+
+const SATELLITE_OPTIONS = [
+  { id: 'who', label: 'Who', color: '#EF4444', hint: 'Subject, Actor, or Agent?' },
+  { id: 'what', label: 'What', color: '#F59E0B', hint: 'Object, Action, or Content?' },
+  { id: 'when', label: 'When', color: '#10B981', hint: 'Time, Duration, or Frequency?' },
+  { id: 'where', label: 'Where', color: '#3B82F6', hint: 'Location, Source, or Destination?' },
+  { id: 'why', label: 'Why', color: '#8B5CF6', hint: 'Reason, Purpose, or Cause?' },
+  { id: 'how', label: 'How', color: '#EC4899', hint: 'Method, Manner, or Degree?' },
+];
+
+const CONNECTION_MODES = [
+  { id: 'hidden', icon: EyeOff, label: 'Hidden' },
+  { id: 'tree', icon: GitBranch, label: 'Tree View' },
+  { id: 'direct', icon: Activity, label: 'Direct View' },
+  { id: 'step', icon: CornerDownRight, label: 'Step View' }
+];
+
+// Layout Configurations
+const LAYOUT_CONFIG = {
+  canvas: {
+    lineHeight: 80,
+    wordSpacing: 15,
+    rowTolerance: 30,
+    minGap: 25,
+    fontScale: 1
+  },
+  book: {
+    lineHeight: 48, 
+    wordSpacing: 6, 
+    rowTolerance: 15,
+    minGap: 6,
+    fontScale: 1.15 
+  }
+};
+
+// --- Helper Functions ---
+
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+const estimateWidth = (text, isBookMode) => {
+  // Adjusted char width: 10.5px for 22px Serif (Book) to prevent clipping/overlap
+  const charWidth = isBookMode ? 10.5 : 9; 
+  const padding = isBookMode ? 2 : 24; 
+  return (text.length * charWidth) + padding;
+};
+
+// Calculates the initial layout for a mode
+const calculateLayout = (nodesToLayout, mode) => {
+  const config = LAYOUT_CONFIG[mode];
+  const isBook = mode === 'book';
+  
+  const windowWidth = window.innerWidth;
+  const containerWidth = isBook 
+    ? Math.min(650, windowWidth * 0.55) 
+    : (windowWidth > 800 ? 800 : windowWidth - 40); 
+
+  const startX = (windowWidth - containerWidth) / 2;
+  const startY = 100;
+  
+  let currentX = startX;
+  let currentY = startY;
+
+  return nodesToLayout.map(node => {
+    const w = estimateWidth(node.text, isBook);
+    
+    if (currentX + w > startX + containerWidth) {
+      currentX = startX;
+      currentY += config.lineHeight;
+    }
+
+    const newNode = {
+      ...node,
+      x: currentX + w / 2,
+      y: currentY,
+    };
+
+    currentX += w + config.wordSpacing;
+    return newNode;
+  });
+};
+
+const splitTextToNodes = (text, mode = 'book') => {
+  const words = text.split(/\s+/);
+  const rawNodes = words.map((word) => ({
+    id: generateId(),
+    text: word,
+    parentId: null,
+    relation: null, 
+    styles: {
+      bold: false,
+      italic: false,
+      underline: false,
+      highlight: false,
+      scale: 1,
+    },
+    collapsed: false,
+  }));
+  return calculateLayout(rawNodes, mode);
+};
+
+const getDescendants = (nodeId, allNodes) => {
+  const children = allNodes.filter(n => n.parentId === nodeId);
+  let descendants = [...children];
+  children.forEach(child => {
+    descendants = [...descendants, ...getDescendants(child.id, allNodes)];
+  });
+  return descendants;
+};
+
+const getWeight = (nodeId, allNodes) => {
+  const count = getDescendants(nodeId, allNodes).length;
+  return Math.min(3.0, 1 + (count * 0.075)); 
+};
+
+// Auto-Layout
+const resolveOverlaps = (currentNodes, mode = 'book') => {
+  const config = LAYOUT_CONFIG[mode];
+  const isBook = mode === 'book';
+  
+  const rows = {};
+  const adjustedNodes = currentNodes.map(n => ({...n}));
+  const sortedByY = [...adjustedNodes].sort((a, b) => a.y - b.y);
+  
+  sortedByY.forEach(node => {
+    let foundRowKey = Object.keys(rows).find(key => Math.abs(parseFloat(key) - node.y) < config.rowTolerance);
+    
+    if (!foundRowKey) {
+      foundRowKey = node.y.toString();
+      rows[foundRowKey] = [];
+    }
+    rows[foundRowKey].push(node);
+  });
+
+  Object.values(rows).forEach(rowNodes => {
+    rowNodes.sort((a, b) => a.x - b.x);
+    
+    for (let i = 0; i < rowNodes.length - 1; i++) {
+      const current = rowNodes[i];
+      const next = rowNodes[i+1];
+      
+      const currentScale = getWeight(current.id, adjustedNodes) * (current.styles.scale || 1);
+      const nextScale = getWeight(next.id, adjustedNodes) * (next.styles.scale || 1);
+      
+      const currentHalfWidth = (estimateWidth(current.text, isBook) * currentScale) / 2;
+      const nextHalfWidth = (estimateWidth(next.text, isBook) * nextScale) / 2;
+      
+      const currentRightEdge = current.x + currentHalfWidth;
+      const nextLeftEdge = next.x - nextHalfWidth;
+      
+      const desiredGap = config.minGap;
+
+      if (isBook) {
+         // Book Mode: Strictly enforce consistent spacing
+         // This pulls words back together if they drift, or pushes them if they overlap
+         const idealNextX = currentRightEdge + desiredGap + nextHalfWidth;
+         next.x = idealNextX;
+      } else {
+         // Canvas Mode: Only fix overlaps (Push logic)
+         if (nextLeftEdge < currentRightEdge + desiredGap) {
+            const pushDistance = (currentRightEdge + desiredGap) - nextLeftEdge;
+            next.x += pushDistance;
+         }
+      }
+    }
+  });
+  
+  return adjustedNodes;
+};
+
+// Gap Closing
+const closeGaps = (currentNodes, movedItems, mode = 'book') => {
+  const config = LAYOUT_CONFIG[mode];
+  const isBook = mode === 'book';
+  let adjustedNodes = [...currentNodes];
+  
+  movedItems.forEach(item => {
+    if (!item.wasRoot) return; 
+    
+    const gapX = item.oldX;
+    const gapY = item.oldY;
+    const gapWidth = estimateWidth(item.text, isBook); 
+    const GAP_SIZE = gapWidth + config.wordSpacing; 
+    
+    adjustedNodes.forEach(node => {
+      if (node.parentId) return;
+      if (Math.abs(node.y - gapY) < config.rowTolerance) {
+        if (node.x > gapX) {
+          node.x -= GAP_SIZE;
+        }
+      }
+    });
+    
+    const hasNodesOnLine = adjustedNodes.some(n => !n.parentId && Math.abs(n.y - gapY) < config.rowTolerance);
+    
+    if (!hasNodesOnLine) {
+       adjustedNodes.forEach(node => {
+         if (!node.parentId && node.y > gapY) {
+           node.y -= config.lineHeight;
+         }
+       });
+    }
+  });
+  
+  return adjustedNodes;
+};
+
+// --- Sub-Components ---
+
+const NODE_HEIGHT = 40; 
+
+const Satellites = React.memo(({ nodes, targetId, satelliteHover, isDraggingNode }) => {
+  const target = nodes.find(n => n.id === targetId);
+  if (!target) return null;
+
+  const radius = 70;
+
+  return (
+    <div 
+      className="absolute pointer-events-none z-40"
+      style={{ left: target.x, top: target.y }}
+    >
+      <style>
+        {`
+          @keyframes satellite-enter {
+            from { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+            to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          }
+        `}
+      </style>
+      {SATELLITE_OPTIONS.map((opt, i) => {
+        const angle = (i * 60) * (Math.PI / 180);
+        const x = Math.cos(angle) * radius;
+        const y = Math.sin(angle) * radius;
+        const isHovered = satelliteHover === opt.id;
+
+        return (
+          <div
+            key={opt.id}
+            className="absolute"
+            style={{ 
+              left: x, 
+              top: y,
+              animation: 'satellite-enter 0.5s cubic-bezier(0.19, 1, 0.22, 1) forwards', 
+              pointerEvents: isDraggingNode ? 'auto' : 'none'
+            }}
+          >
+            <div 
+              className={`flex items-center justify-center w-12 h-12 rounded-full shadow-lg transition-transform duration-200 ease-out
+                ${isHovered ? 'scale-125 ring-2 ring-white z-50' : 'scale-100 opacity-90'}
+              `}
+              style={{ backgroundColor: opt.color }}
+            >
+              <span className="text-[10px] font-bold text-white">{opt.label}</span>
+            </div>
+            {isHovered && (
+              <div className="absolute top-14 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded w-32 text-center shadow-xl z-50 animate-fade-in">
+                {opt.hint}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+const Connections = React.memo(({ nodes, selection, connectionMode, viewMode }) => {
+  if (connectionMode === 'hidden') return null; 
+
+  const groups = {};
+  nodes.forEach(node => {
+    if (!node.parentId) return;
+    const key = `${node.parentId}-${node.relation}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(node);
+  });
+
+  const Label = ({ x, y, label, color }) => (
+    <foreignObject x={x - 20} y={y - 10} width="40" height="20">
+       <div className="flex items-center justify-center">
+         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full text-white shadow-sm opacity-90" style={{ backgroundColor: color }}>
+           {label}
+         </span>
+       </div>
+    </foreignObject>
+  );
+
+  return (
+    <svg className="absolute top-0 left-0 w-full h-full pointer-events-none overflow-visible">
+      {Object.entries(groups).map(([key, groupNodes]) => {
+        const parent = nodes.find(n => n.id === groupNodes[0].parentId);
+        if (!parent) return null;
+
+        const relationId = groupNodes[0].relation;
+        const relationObj = SATELLITE_OPTIONS.find(s => s.id === relationId);
+        const color = relationObj?.color || '#9CA3AF';
+        const isAnySelected = groupNodes.some(n => selection.includes(n.id));
+        const strokeWidth = isAnySelected ? "3" : "2";
+        const opacity = isAnySelected ? "1" : "0.6";
+
+        const pScale = parent.styles.scale || 1;
+        const parentHalfHeight = viewMode === 'book' ? 10 : (NODE_HEIGHT / 2 * pScale);
+        
+        const startX = parent.x;
+        const startY = parent.y + parentHalfHeight;
+
+        if (connectionMode === 'tree') {
+          if (groupNodes.length === 1) {
+             const child = groupNodes[0];
+             const endX = child.x;
+             const endY = child.y - (viewMode === 'book' ? 10 : (NODE_HEIGHT / 2 * (child.styles.scale || 1)));
+             const cp1Y = startY + (endY - startY) * 0.5;
+             const cp2Y = endY - (endY - startY) * 0.5;
+
+             return (
+               <g key={key}>
+                 <path d={`M ${startX} ${startY} C ${startX} ${cp1Y}, ${endX} ${cp2Y}, ${endX} ${endY}`} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />
+                 <Label x={startX + (endX - startX) * 0.5} y={startY + (endY - startY) * 0.5} label={relationObj?.label} color={color} />
+               </g>
+             );
+          } else {
+             const minChildX = Math.min(...groupNodes.map(n => n.x));
+             const maxChildX = Math.max(...groupNodes.map(n => n.x));
+             const hubX = (minChildX + maxChildX) / 2;
+             
+             const sampleChild = groupNodes[0];
+             const sampleChildTop = sampleChild.y - (viewMode === 'book' ? 10 : (NODE_HEIGHT / 2 * (sampleChild.styles.scale || 1)));
+             const hubY = (startY + sampleChildTop) / 2;
+
+             return (
+               <g key={key}>
+                 <path d={`M ${startX} ${startY} C ${startX} ${startY + (hubY-startY)*0.5}, ${hubX} ${startY + (hubY-startY)*0.5}, ${hubX} ${hubY}`} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />
+                 <Label x={hubX} y={hubY} label={relationObj?.label} color={color} />
+                 {groupNodes.map(child => {
+                    const cH = viewMode === 'book' ? 10 : (NODE_HEIGHT / 2 * (child.styles.scale || 1));
+                    const childTopY = child.y - cH;
+                    return <path key={`b-${child.id}`} d={`M ${hubX} ${hubY} C ${hubX} ${hubY + (childTopY-hubY)*0.5}, ${child.x} ${childTopY - (childTopY-hubY)*0.5}, ${child.x} ${childTopY}`} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />;
+                 })}
+               </g>
+             );
+          }
+        }
+
+        if (connectionMode === 'direct') {
+           const parentCenterY = parent.y;
+           return (
+             <g key={key}>
+                {groupNodes.map(child => {
+                   const childCenterY = child.y;
+                   const midX = (startX + child.x) / 2;
+                   const midY = (parentCenterY + childCenterY) / 2;
+                   return (
+                     <g key={`d-${child.id}`}>
+                       <line x1={startX} y1={parentCenterY} x2={child.x} y2={childCenterY} stroke={color} strokeWidth={strokeWidth} opacity={opacity} />
+                       <Label x={midX} y={midY} label={relationObj?.label} color={color} />
+                     </g>
+                   );
+                })}
+             </g>
+           );
+        }
+
+        if (connectionMode === 'step') {
+          return (
+            <g key={key}>
+              {groupNodes.map(child => {
+                 const endX = child.x;
+                 const endY = child.y - (viewMode === 'book' ? 10 : (NODE_HEIGHT / 2 * (child.styles.scale || 1)));
+                 const midY = (startY + endY) / 2;
+                 return (
+                   <g key={`s-${child.id}`}>
+                     <path d={`M ${startX} ${startY} L ${startX} ${midY} L ${endX} ${midY} L ${endX} ${endY}`} fill="none" stroke={color} strokeWidth={strokeWidth} opacity={opacity} />
+                     <Label x={endX} y={midY} label={relationObj?.label} color={color} />
+                   </g>
+                 );
+              })}
+            </g>
+          );
+        }
+
+        return null;
+      })}
+    </svg>
+  );
+});
+
+export default function App() {
+  const [nodes, setNodes] = useState([]);
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  
+  const [selection, setSelection] = useState([]); 
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+
+  const [dragState, setDragState] = useState(null); 
+  const [hoverTarget, setHoverTarget] = useState(null); 
+  const [satelliteHover, setSatelliteHover] = useState(null); 
+  
+  const [apiKey, setApiKey] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [loading, setLoading] = useState(false);
+  
+  const [aiResponse, setAiResponse] = useState(null);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [showAiModal, setShowAiModal] = useState(false);
+  
+  const [connectionMode, setConnectionMode] = useState('hidden'); 
+  const [viewMode, setViewMode] = useState('book'); 
+  
+  const positionsCache = useRef({ canvas: {}, book: {} });
+  
+  const [history, setHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+
+  const canvasRef = useRef(null);
+
+  // Initial Load
+  useEffect(() => {
+    const initialNodes = splitTextToNodes(DEFAULT_TEXT, 'book');
+    const resolvedNodes = resolveOverlaps(initialNodes, 'book');
+    setNodes(resolvedNodes);
+    saveToHistory(resolvedNodes);
+  }, []);
+
+  const saveToHistory = (newNodes) => {
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(JSON.stringify(newNodes));
+    if (newHistory.length > 20) newHistory.shift();
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  };
+
+  const undo = () => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setNodes(JSON.parse(history[newIndex]));
+      setHistoryIndex(newIndex);
+    }
+  };
+
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      setNodes(JSON.parse(history[newIndex]));
+      setHistoryIndex(newIndex);
+    }
+  };
+
+  const updateNodes = (newNodes, shouldResolve = false) => {
+    let finalNodes = newNodes;
+    if (shouldResolve) {
+      finalNodes = resolveOverlaps(newNodes, viewMode);
+    }
+    setNodes(finalNodes);
+    saveToHistory(finalNodes);
+  };
+
+  const toggleViewMode = () => {
+    const nextMode = viewMode === 'canvas' ? 'book' : 'canvas';
+    
+    const currentPositions = {};
+    nodes.forEach(n => {
+      currentPositions[n.id] = { x: n.x, y: n.y };
+    });
+    positionsCache.current[viewMode] = currentPositions;
+
+    let nextNodes = nodes.map(n => ({...n}));
+    const cachedPositions = positionsCache.current[nextMode];
+    const hasCache = Object.keys(cachedPositions).length > 0;
+
+    if (hasCache) {
+      nextNodes = nextNodes.map(n => {
+        if (cachedPositions[n.id]) {
+          return { ...n, x: cachedPositions[n.id].x, y: cachedPositions[n.id].y };
+        }
+        return n; 
+      });
+    } else {
+      nextNodes = calculateLayout(nextNodes, nextMode);
+    }
+
+    if (hasCache) {
+        nextNodes = resolveOverlaps(nextNodes, nextMode);
+    }
+
+    setViewMode(nextMode);
+    setNodes(nextNodes);
+    if (nextMode === 'book') {
+        setOffset({ x: 0, y: 0 });
+        setScale(1);
+    }
+  };
+
+  const cycleConnectionMode = () => {
+    const currentIndex = CONNECTION_MODES.findIndex(m => m.id === connectionMode);
+    const nextIndex = (currentIndex + 1) % CONNECTION_MODES.length;
+    setConnectionMode(CONNECTION_MODES[nextIndex].id);
+  };
+
+  const callGemini = async (prompt) => {
+    const apiKey = ""; 
+    setIsAiLoading(true);
+    setShowAiModal(true);
+    setAiResponse(null);
+    const makeRequest = async (retryCount = 0) => {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
+        );
+        if (!response.ok) {
+          if (response.status === 429 && retryCount < 3) {
+            await new Promise(r => setTimeout(r, Math.pow(2, retryCount) * 1000));
+            return makeRequest(retryCount + 1);
+          }
+          throw new Error('API request failed');
+        }
+        const data = await response.json();
+        setAiResponse(data.candidates?.[0]?.content?.parts?.[0]?.text || "No analysis available.");
+      } catch (error) {
+        setAiResponse("Error generating analysis.");
+      } finally {
+        setIsAiLoading(false);
+      }
+    };
+    makeRequest();
+  };
+
+  const triggerInsights = () => {
+    const fullText = nodes.sort((a,b) => a.y - b.y || a.x - b.x).map(n => n.text).join(' ');
+    const prompt = `Analyze the following biblical text structurally and theologically... "${fullText}"`;
+    callGemini(prompt);
+  };
+
+  const triggerWordStudy = () => {
+    if (selection.length === 0) return;
+    const selectedText = nodes.filter(n => selection.includes(n.id)).sort((a,b) => a.x - b.x).map(n => n.text).join(' ');
+    const fullText = nodes.map(n => n.text).join(' ');
+    const prompt = `Perform a brief word study on "${selectedText}" in context: "${fullText}"...`;
+    callGemini(prompt);
+  };
+
+  const getCanvasCoordinates = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    if (viewMode === 'book') {
+        return {
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top + canvasRef.current.scrollTop
+        };
+    }
+    return {
+      x: (e.clientX - rect.left - offset.x) / scale,
+      y: (e.clientY - rect.top - offset.y) / scale,
+    };
+  };
+
+  const handlePointerDown = (e, nodeId = null) => {
+    e.target.setPointerCapture(e.pointerId);
+    if (nodeId) e.stopPropagation();
+    const coords = getCanvasCoordinates(e);
+
+    if (nodeId) {
+      let newSelection = [...selection];
+      let pendingDeselect = false;
+      const isMultiAction = multiSelectMode || e.shiftKey;
+      const isAlreadySelected = newSelection.includes(nodeId);
+
+      if (isMultiAction) {
+        if (isAlreadySelected) pendingDeselect = true;
+        else newSelection.push(nodeId);
+        setSelection(newSelection);
+      } else {
+        if (!isAlreadySelected) {
+           newSelection = [nodeId];
+           setSelection(newSelection);
+        }
+      }
+      
+      const idsToMove = new Set(newSelection);
+      const initialPositions = {};
+      const gatherDescendants = (pId) => {
+        nodes.forEach(n => {
+          if (n.parentId === pId && !idsToMove.has(n.id)) {
+            idsToMove.add(n.id);
+            gatherDescendants(n.id);
+          }
+        });
+      };
+      newSelection.forEach(selId => gatherDescendants(selId));
+      nodes.forEach(n => { if (idsToMove.has(n.id)) initialPositions[n.id] = { x: n.x, y: n.y }; });
+
+      setDragState({
+        type: 'node', mainNodeId: nodeId, startX: coords.x, startY: coords.y,
+        idsToMove, initialPositions, hasMoved: false, pendingDeselect, pointerId: e.pointerId
+      });
+    } else {
+      if (multiSelectMode || e.shiftKey) {
+        setDragState({ type: 'box-select', startX: coords.x, startY: coords.y, currentX: coords.x, currentY: coords.y, pointerId: e.pointerId });
+      } else {
+        if (viewMode === 'book') return;
+        setSelection([]); 
+        setDragState({ type: 'canvas', startX: e.clientX, startY: e.clientY, initialOffsetX: offset.x, initialOffsetY: offset.y, hasMoved: false, pointerId: e.pointerId });
+      }
+    }
+  };
+
+  const handlePointerMove = (e) => {
+    if (!dragState) return;
+    if (e.pointerId !== dragState.pointerId) return;
+    e.preventDefault(); 
+    const coords = getCanvasCoordinates(e);
+
+    if (dragState.type === 'node') {
+      if (!dragState.hasMoved) {
+         const dx = coords.x - dragState.startX;
+         const dy = coords.y - dragState.startY;
+         if (Math.hypot(dx, dy) > 3) setDragState(prev => ({ ...prev, hasMoved: true }));
+         else return;
+      }
+
+      const rawDx = coords.x - dragState.startX;
+      const rawDy = coords.y - dragState.startY;
+      const mainInitPos = dragState.initialPositions[dragState.mainNodeId];
+      const proposedX = mainInitPos.x + rawDx;
+      const proposedY = mainInitPos.y + rawDy;
+
+      let dx = rawDx;
+      let dy = rawDy;
+
+      if (viewMode === 'canvas') {
+          const viewportLeft = -offset.x / scale;
+          const viewportTop = -offset.y / scale;
+          const viewportRight = (window.innerWidth - offset.x) / scale;
+          const viewportBottom = (window.innerHeight - offset.y) / scale;
+          const PADDING = 20;
+          const clampedX = Math.max(viewportLeft + PADDING, Math.min(viewportRight - PADDING, proposedX));
+          const clampedY = Math.max(viewportTop + PADDING, Math.min(viewportBottom - PADDING, proposedY));
+          dx = clampedX - mainInitPos.x;
+          dy = clampedY - mainInitPos.y;
+      }
+
+      const nextNodes = nodes.map(n => {
+        if (dragState.idsToMove.has(n.id)) {
+          const init = dragState.initialPositions[n.id];
+          return { ...n, x: init.x + dx, y: init.y + dy };
+        }
+        return n;
+      });
+      setNodes(nextNodes);
+
+      const mainNode = nextNodes.find(n => n.id === dragState.mainNodeId);
+      let foundTarget = null;
+      let foundSat = null;
+      const potentialTargets = nextNodes.filter(n => {
+        if (connectionMode === 'hidden' && n.parentId) return false;
+        if (dragState.idsToMove.has(n.id)) return false; 
+        const dist = Math.hypot(n.x - mainNode.x, n.y - mainNode.y);
+        return dist < 120;
+      });
+      if (potentialTargets.length > 0) {
+        potentialTargets.sort((a, b) => Math.hypot(a.x - mainNode.x, a.y - mainNode.y) - Math.hypot(b.x - mainNode.x, b.y - mainNode.y));
+        const target = potentialTargets[0];
+        foundTarget = target.id;
+        const satRadius = 70;
+        SATELLITE_OPTIONS.forEach((sat, i) => {
+          const angle = (i * 60) * (Math.PI / 180);
+          const satX = target.x + Math.cos(angle) * satRadius;
+          const satY = target.y + Math.sin(angle) * satRadius;
+          if (Math.hypot(coords.x - satX, coords.y - satY) < 35) foundSat = sat.id;
+        });
+      }
+      setHoverTarget(foundTarget);
+      setSatelliteHover(foundSat);
+    
+    } else if (dragState.type === 'box-select') {
+      setDragState(prev => ({ ...prev, currentX: coords.x, currentY: coords.y }));
+    } else if (dragState.type === 'canvas') {
+      const dx = e.clientX - dragState.startX;
+      const dy = e.clientY - dragState.startY;
+      setOffset({ x: dragState.initialOffsetX + dx, y: dragState.initialOffsetY + dy });
+    }
+  };
+
+  const handlePointerUp = (e) => {
+    if (!dragState) return;
+    if (e.pointerId !== dragState.pointerId) return;
+    if (e.target.hasPointerCapture(e.pointerId)) e.target.releasePointerCapture(e.pointerId);
+
+    if (dragState.type === 'node') {
+      if (!dragState.hasMoved && dragState.pendingDeselect) {
+        setSelection(prev => prev.filter(id => id !== dragState.mainNodeId));
+      }
+      if (dragState.hasMoved) {
+        if (hoverTarget && satelliteHover) {
+          const parent = nodes.find(n => n.id === hoverTarget);
+          
+          const gap = viewMode === 'book' ? 40 : 120;
+          const snapY = parent.y + gap; 
+          const snapX = parent.x;
+          
+          const movedRoots = [];
+          dragState.idsToMove.forEach(id => {
+             const currentNode = nodes.find(n => n.id === id);
+             if (currentNode && !currentNode.parentId) {
+                movedRoots.push({ id, text: currentNode.text, oldX: dragState.initialPositions[id].x, oldY: dragState.initialPositions[id].y, wasRoot: true });
+             }
+          });
+
+          const nextNodes = nodes.map(n => {
+            if (dragState.idsToMove.has(n.id)) {
+               if (selection.includes(n.id)) return { ...n, parentId: hoverTarget, relation: satelliteHover, x: snapX, y: snapY };
+               return { ...n, x: snapX, y: snapY }; 
+            }
+            return n;
+          });
+          
+          const filledNodes = closeGaps(nextNodes, movedRoots, viewMode);
+          updateNodes(filledNodes, true); 
+        } else {
+          updateNodes([...nodes], false);
+        }
+      }
+    } 
+    else if (dragState.type === 'box-select') {
+      const minX = Math.min(dragState.startX, dragState.currentX);
+      const maxX = Math.max(dragState.startX, dragState.currentX);
+      const minY = Math.min(dragState.startY, dragState.currentY);
+      const maxY = Math.max(dragState.startY, dragState.currentY);
+      const intersectedIds = nodes.filter(n => {
+        const nodeLeft = n.x - 30; const nodeRight = n.x + 30; const nodeTop = n.y - 15; const nodeBottom = n.y + 15;
+        return !(nodeLeft > maxX || nodeRight < minX || nodeTop > maxY || nodeBottom < minY);
+      }).map(n => n.id);
+      setSelection(Array.from(new Set([...selection, ...intersectedIds])));
+    }
+    setDragState(null);
+    setHoverTarget(null);
+    setSatelliteHover(null);
+  };
+
+  const toggleStyle = (styleKey) => {
+    if (selection.length === 0) return;
+    const newNodes = nodes.map(n => selection.includes(n.id) ? { ...n, styles: { ...n.styles, [styleKey]: !n.styles[styleKey] } } : n);
+    updateNodes(newNodes, true);
+  };
+  const changeFontSize = (delta) => {
+    if (selection.length === 0) return;
+    const newNodes = nodes.map(n => selection.includes(n.id) ? { ...n, styles: { ...n.styles, scale: Math.max(0.5, (n.styles.scale || 1) + delta) } } : n);
+    updateNodes(newNodes, true);
+  };
+  const detachNode = () => {
+    if (selection.length === 0) return;
+    const newNodes = nodes.map(n => selection.includes(n.id) ? { ...n, parentId: null, relation: null } : n);
+    updateNodes(newNodes, true); 
+  };
+
+  const fetchPassage = async (reference) => {
+    setLoading(true);
+    try {
+        let text = "";
+        if (!apiKey) {
+            if (reference.toLowerCase().includes("romans 5")) text = DEFAULT_TEXT;
+            else { alert("Please provide an ESV API Key"); text = DEFAULT_TEXT; }
+        } else {
+            const response = await fetch(`https://api.esv.org/v3/passage/text/?q=${encodeURIComponent(reference)}&include-headings=false&include-footnotes=false&include-verse-numbers=false`, { headers: { Authorization: `Token ${apiKey}` } });
+            const data = await response.json();
+            text = data.passages[0];
+        }
+        const newNodes = splitTextToNodes(text, viewMode);
+        updateNodes(newNodes, true);
+        setOffset({ x: 0, y: 0 });
+        setScale(1);
+        setSelection([]);
+    } catch (error) { alert("Failed to fetch passage."); } finally { setLoading(false); }
+  };
+
+  const ActiveModeIcon = CONNECTION_MODES.find(m => m.id === connectionMode)?.icon || EyeOff;
+  const activeModeLabel = CONNECTION_MODES.find(m => m.id === connectionMode)?.label || 'Hidden';
+  const isBookMode = viewMode === 'book';
+
+  const maxNodeY = nodes.length > 0 ? Math.max(...nodes.map(n => n.y)) : 0;
+  const contentHeight = isBookMode ? Math.max(window.innerHeight, maxNodeY + 200) : '100%';
+
+  return (
+    <div 
+      className={`w-full h-screen flex flex-col select-none text-gray-900 transition-colors duration-500
+        ${isBookMode ? 'bg-[#F9F5EB] overflow-y-auto touch-pan-y' : 'bg-[#F9FAFB] overflow-hidden touch-none'}
+      `}
+      style={{ touchAction: isBookMode ? 'pan-y' : 'none' }}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+      `}</style>
+      
+      {/* --- Top Toolbar --- */}
+      <header className={`h-14 border-b flex items-center justify-between px-4 shadow-sm z-50 transition-colors duration-300 sticky top-0
+         ${isBookMode ? 'bg-[#F2EFE5] border-[#E6DCC8]' : 'bg-white border-gray-200'}
+      `}>
+        <div className="flex items-center space-x-2">
+          <BookOpen className={`w-5 h-5 ${isBookMode ? 'text-[#8b5e3c]' : 'text-indigo-600'}`} />
+          <h1 className={`text-lg font-semibold hidden sm:block ${isBookMode ? 'text-[#5a4231] font-serif' : 'text-gray-800'}`}>ScriptureMap</h1>
+        </div>
+
+        <div className={`flex items-center space-x-3 rounded-lg p-1 ${isBookMode ? 'bg-[#E6DCC8]' : 'bg-gray-100'}`}>
+          <button onClick={undo} disabled={historyIndex <= 0} className="p-1.5 rounded hover:bg-white/50 text-gray-600 disabled:opacity-30 transition">
+            <Undo2 className="w-4 h-4" />
+          </button>
+          <div className="w-px h-4 bg-gray-300/50"></div>
+          <button onClick={redo} disabled={historyIndex >= history.length - 1} className="p-1.5 rounded hover:bg-white/50 text-gray-600 disabled:opacity-30 transition">
+             <Redo2 className="w-4 h-4" />
+          </button>
+          <div className="w-px h-4 bg-gray-300/50"></div>
+          
+          <button 
+            onClick={() => setMultiSelectMode(!multiSelectMode)}
+            className={`p-1.5 rounded transition flex items-center space-x-1 ${multiSelectMode ? 'bg-indigo-600 text-white shadow-sm' : 'hover:bg-white/50 text-gray-600'}`}
+          >
+             {multiSelectMode ? <CheckSquare className="w-4 h-4"/> : <MousePointer2 className="w-4 h-4"/>}
+             <span className="text-xs font-medium hidden xs:block">{multiSelectMode ? 'Multi (Box)' : 'Select'}</span>
+          </button>
+        </div>
+
+        <div className="flex items-center space-x-3">
+          <button 
+             onClick={toggleViewMode}
+             className={`p-2 rounded-full transition flex items-center gap-2 ${isBookMode ? 'bg-[#E6DCC8] text-[#8b5e3c]' : 'text-gray-400 hover:text-gray-600'}`}
+             title={`Switch to ${isBookMode ? 'Diagram' : 'Book'} View`}
+          >
+             {isBookMode ? <Layout className="w-5 h-5"/> : <FileText className="w-5 h-5"/>}
+          </button>
+
+          <button 
+             onClick={cycleConnectionMode}
+             className={`p-2 rounded-full transition flex items-center gap-2 ${connectionMode !== 'hidden' ? 'bg-indigo-50 text-indigo-600' : 'text-gray-400 hover:text-gray-600'}`}
+             title={`Connections: ${activeModeLabel}`}
+          >
+             <ActiveModeIcon className="w-5 h-5"/>
+          </button>
+          
+          <button 
+             onClick={triggerInsights}
+             className="p-2 rounded-full text-indigo-600 hover:bg-indigo-50 transition border border-indigo-100"
+             title="Passage Insights (Gemini)"
+          >
+             <Sparkles className="w-5 h-5"/>
+          </button>
+
+          <button 
+            onClick={() => setShowSettings(true)}
+            className="p-2 text-gray-500 hover:text-indigo-600 transition"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
+        </div>
+      </header>
+
+      {/* --- Context Toolbar --- */}
+      {selection.length > 0 && (
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 bg-white/90 backdrop-blur rounded-full shadow-xl border border-gray-100 p-2 flex items-center space-x-2 z-50 animate-bounce-in max-w-[95vw] overflow-x-auto">
+           <button onClick={() => toggleStyle('bold')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Bold className="w-4 h-4"/></button>
+           <button onClick={() => toggleStyle('italic')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Italic className="w-4 h-4"/></button>
+           <button onClick={() => toggleStyle('underline')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Underline className="w-4 h-4"/></button>
+           <button onClick={() => toggleStyle('highlight')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Highlighter className="w-4 h-4"/></button>
+           <div className="w-px h-4 bg-gray-300 mx-1"></div>
+           <button onClick={() => changeFontSize(0.1)} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 font-bold text-xs">A+</button>
+           <button onClick={() => changeFontSize(-0.1)} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 font-bold text-xs">A-</button>
+           <div className="w-px h-4 bg-gray-300 mx-1"></div>
+           
+           <button onClick={triggerWordStudy} className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-full flex items-center space-x-1">
+             <Sparkles className="w-4 h-4" />
+             <span className="text-xs font-bold">Study</span>
+           </button>
+           <div className="w-px h-4 bg-gray-300 mx-1"></div>
+
+           <button onClick={detachNode} className="p-2 hover:bg-red-50 text-red-500 rounded-full">
+             <Trash2 className="w-4 h-4" />
+           </button>
+           <span className="text-xs text-gray-400 font-medium px-2 border-l border-gray-200">
+             {selection.length}
+           </span>
+        </div>
+      )}
+
+      {/* --- Main Canvas --- */}
+      <div 
+        ref={canvasRef}
+        className="flex-1 relative"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+        style={{
+          // Apply background grid only if NOT in book mode
+          backgroundImage: isBookMode ? 'none' : 'radial-gradient(#E5E7EB 1px, transparent 1px)',
+          backgroundSize: '24px 24px',
+          height: isBookMode ? contentHeight : '100%'
+        }}
+      >
+        <div 
+          className="absolute origin-top-left transition-transform duration-75 ease-out"
+          style={{ 
+            // In book mode, we reset scale/offset visually, but use standard layout flow
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            width: '100%',
+            height: '100%'
+          }}
+        >
+          <Connections nodes={nodes} selection={selection} connectionMode={connectionMode} viewMode={viewMode} />
+
+          {/* Nodes */}
+          {nodes.map(node => {
+            if (connectionMode === 'hidden' && node.parentId) return null;
+
+            const descendantCount = getDescendants(node.id, nodes).length;
+            const weight = getWeight(node.id, nodes);
+            const userScale = node.styles.scale || 1;
+            const finalScale = weight * userScale;
+
+            const isSelected = selection.includes(node.id);
+            const isMoving = dragState?.idsToMove?.has(node.id);
+            const isHoverTarget = hoverTarget === node.id;
+
+            return (
+              <div
+                key={node.id}
+                onPointerDown={(e) => { handlePointerDown(e, node.id); }}
+                className={`absolute group flex items-center justify-center px-2 py-1 transition-all duration-300 ease-out z-10
+                  ${isMoving ? 'cursor-grabbing' : 'cursor-grab'}
+                  ${isBookMode 
+                    ? 'bg-transparent border-0 shadow-none p-0' 
+                    : `rounded-lg shadow-sm border px-3 py-1.5 ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-gray-200 bg-white'}`
+                  }
+                  ${!isBookMode && isHoverTarget ? 'ring-4 ring-indigo-100 scale-105 border-indigo-300' : ''}
+                  ${!isBookMode && node.styles.highlight ? 'bg-yellow-50 border-yellow-200' : ''}
+                  ${isBookMode && node.styles.highlight ? 'bg-yellow-200/40 rounded-sm' : ''} 
+                  ${isBookMode && isSelected ? 'underline decoration-indigo-400 decoration-2' : ''}
+                `}
+                style={{
+                  left: node.x,
+                  top: node.y,
+                  transform: `translate(-50%, -50%) scale(${finalScale})`,
+                  minWidth: 'min-content'
+                }}
+              >
+                <span 
+                  className={`whitespace-nowrap pointer-events-none select-none
+                    ${isBookMode ? 'text-[#2D2D2D] font-serif leading-tight' : 'text-gray-800 font-sans'}
+                    ${node.styles.bold ? 'font-bold' : 'font-normal'}
+                    ${node.styles.italic ? 'italic' : ''}
+                    ${node.styles.underline ? 'underline' : ''}
+                  `}
+                  style={{ 
+                    fontFamily: isBookMode ? '"Crimson Text", serif' : 'inherit',
+                    fontSize: isBookMode ? '22px' : '16px',
+                    letterSpacing: isBookMode ? '0.01em' : 'normal'
+                  }}
+                >
+                  {node.text}
+                </span>
+
+                {!isBookMode && multiSelectMode && isSelected && (
+                  <div className="absolute -top-2 -left-2 w-4 h-4 bg-indigo-600 text-white rounded flex items-center justify-center text-[10px] shadow border border-white">
+                    ✓
+                  </div>
+                )}
+
+                {descendantCount > 0 && (
+                  <span 
+                    className={`absolute flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-indigo-600 text-white text-[10px] font-bold rounded-full shadow-sm border-2 border-white pointer-events-none transition-transform
+                      ${isBookMode ? '-top-2 -right-3 scale-75 opacity-70' : '-top-2 -right-2'}
+                      ${connectionMode === 'hidden' ? 'scale-125 bg-red-500' : ''} 
+                    `}
+                  >
+                    {descendantCount}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          
+          {/* Marquee Selection Box */}
+          {dragState?.type === 'box-select' && (
+             <div 
+               className="absolute border-2 border-indigo-500 bg-indigo-500/20 pointer-events-none z-50"
+               style={{
+                 left: Math.min(dragState.startX, dragState.currentX),
+                 top: Math.min(dragState.startY, dragState.currentY),
+                 width: Math.abs(dragState.currentX - dragState.startX),
+                 height: Math.abs(dragState.currentY - dragState.startY),
+               }}
+             />
+          )}
+
+          {hoverTarget && dragState?.type === 'node' && (
+            <Satellites 
+              nodes={nodes} 
+              targetId={hoverTarget} 
+              satelliteHover={satelliteHover} 
+              isDraggingNode={dragState?.type === 'node'}
+            />
+          )}
+
+        </div>
+      </div>
+
+      {/* --- Overlay Controls --- */}
+      {!isBookMode && (
+        <div className="absolute bottom-6 right-6 flex flex-col space-y-2">
+           <button onClick={() => setScale(s => Math.min(2, s + 0.1))} className="w-10 h-10 bg-white rounded-full shadow-lg border border-gray-100 flex items-center justify-center text-gray-600 hover:text-indigo-600 text-xl font-bold">+</button>
+           <button onClick={() => setScale(s => Math.max(0.2, s - 0.1))} className="w-10 h-10 bg-white rounded-full shadow-lg border border-gray-100 flex items-center justify-center text-gray-600 hover:text-indigo-600 text-xl font-bold">-</button>
+           <button onClick={() => {setScale(1); setOffset({x:0, y:0})}} className="w-10 h-10 bg-white rounded-full shadow-lg border border-gray-100 flex items-center justify-center text-gray-600 hover:text-indigo-600">
+             <RefreshCcw className="w-4 h-4"/>
+           </button>
+        </div>
+      )}
+
+      {/* --- AI Modal --- */}
+      {showAiModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
+           <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+              <div className="flex justify-between items-center p-4 border-b border-gray-100">
+                <div className="flex items-center gap-2 text-indigo-600">
+                  <Sparkles className="w-5 h-5"/>
+                  <h2 className="text-lg font-bold">Gemini Insights</h2>
+                </div>
+                <button onClick={() => setShowAiModal(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5"/></button>
+              </div>
+              
+              <div className="p-6 overflow-y-auto flex-1 text-gray-700 leading-relaxed">
+                 {isAiLoading ? (
+                   <div className="flex flex-col items-center justify-center h-40 space-y-4">
+                     <Loader2 className="w-8 h-8 text-indigo-600 animate-spin"/>
+                     <p className="text-sm text-gray-500 font-medium">Analyzing text...</p>
+                   </div>
+                 ) : (
+                   <div className="whitespace-pre-wrap font-sans text-sm">
+                     {aiResponse}
+                   </div>
+                 )}
+              </div>
+              
+              <div className="p-4 border-t border-gray-100 flex justify-end">
+                <button onClick={() => setShowAiModal(false)} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition">
+                  Close
+                </button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* --- Settings Modal --- */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+           <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-gray-800">Settings</h2>
+                <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5"/></button>
+              </div>
+              <div className="space-y-4">
+                 <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Passage Selector</label>
+                    <div className="flex space-x-2">
+                       <input type="text" placeholder="e.g., John 3:16" className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" id="passageInput"/>
+                       <button 
+                         onClick={() => fetchPassage(document.getElementById('passageInput').value)}
+                         disabled={loading}
+                         className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+                       >
+                         {loading ? '...' : 'Load'}
+                       </button>
+                    </div>
+                 </div>
+                 <div className="pt-4 border-t border-gray-100">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">ESV API Key</label>
+                    <input 
+                      type="password" 
+                      value={apiKey} 
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder="Enter ESV API Token"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                 </div>
+              </div>
+              <div className="mt-6 flex justify-end">
+                <button onClick={() => setShowSettings(false)} className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-50 rounded-lg">Close</button>
+              </div>
+           </div>
+        </div>
+      )}
+    </div>
+  );
+}

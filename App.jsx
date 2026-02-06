@@ -148,6 +148,13 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
   const config = LAYOUT_CONFIG[mode];
   const isBook = mode === 'book';
   
+  const windowWidth = window.innerWidth;
+  const containerWidth = isBook 
+    ? Math.min(650, windowWidth * 0.55) 
+    : (windowWidth > 800 ? 800 : windowWidth - 40); 
+  const startX = (windowWidth - containerWidth) / 2;
+  const maxRightEdge = startX + containerWidth;
+
   const rows = {};
   const adjustedNodes = currentNodes.map(n => ({...n}));
   const sortedByY = [...adjustedNodes].sort((a, b) => a.y - b.y);
@@ -162,12 +169,21 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
     rows[foundRowKey].push(node);
   });
 
-  Object.values(rows).forEach(rowNodes => {
-    rowNodes.sort((a, b) => a.x - b.x);
+  // Convert to array of row objects for sequential processing (allows wrapping)
+  let sortedRows = Object.keys(rows)
+    .sort((a, b) => parseFloat(a) - parseFloat(b))
+    .map(key => ({ y: parseFloat(key), nodes: rows[key] }));
+
+  for (let i = 0; i < sortedRows.length; i++) {
+    let row = sortedRows[i];
     
-    for (let i = 0; i < rowNodes.length - 1; i++) {
-      const current = rowNodes[i];
-      const next = rowNodes[i+1];
+    // 1. Sort by X
+    row.nodes.sort((a, b) => a.x - b.x);
+    
+    // 2. Resolve overlaps / Apply spacing
+    for (let j = 0; j < row.nodes.length - 1; j++) {
+      const current = row.nodes[j];
+      const next = row.nodes[j+1];
       
       const currentScale = getWeight(current.id, adjustedNodes) * (current.styles.scale || 1);
       const nextScale = getWeight(next.id, adjustedNodes) * (next.styles.scale || 1);
@@ -181,21 +197,98 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
       const desiredGap = config.minGap;
 
       if (isBook) {
-         // Book Mode: Strictly enforce consistent spacing
-         // This pulls words back together if they drift, or pushes them if they overlap
          const idealNextX = currentRightEdge + desiredGap + nextHalfWidth;
          next.x = idealNextX;
       } else {
-         // Canvas Mode: Only fix overlaps (Push logic)
          if (nextLeftEdge < currentRightEdge + desiredGap) {
             const pushDistance = (currentRightEdge + desiredGap) - nextLeftEdge;
             next.x += pushDistance;
          }
       }
     }
-  });
+
+    // 3. Check for Overflow (Book Mode only)
+    if (isBook && row.nodes.length > 0) {
+       const lastNode = row.nodes[row.nodes.length - 1];
+       const lastNodeScale = getWeight(lastNode.id, adjustedNodes) * (lastNode.styles.scale || 1);
+       const lastNodeRight = lastNode.x + (estimateWidth(lastNode.text, isBook) * lastNodeScale) / 2;
+
+       if (lastNodeRight > maxRightEdge) {
+          // Find the first node that crosses the boundary (or just move the last one?)
+          // We'll move all nodes that extend beyond boundary, or at least the ones starting beyond it?
+          // Strategy: Traverse backwards to find the split point.
+          // Ideally we want to break at a point where a node is mostly out, or pushes out.
+          // Simple approach: Iterate and find first node where rightEdge > maxRightEdge.
+          
+          let splitIndex = -1;
+          for (let k = 0; k < row.nodes.length; k++) {
+             const node = row.nodes[k];
+             const scale = getWeight(node.id, adjustedNodes) * (node.styles.scale || 1);
+             const right = node.x + (estimateWidth(node.text, isBook) * scale) / 2;
+             if (right > maxRightEdge) {
+                splitIndex = k;
+                break;
+             }
+          }
+
+          if (splitIndex !== -1 && splitIndex < row.nodes.length) {
+             // If the very first node is overflowing, we might have a problem (single word too long).
+             // We'll just force it to wrap anyway if it's not the ONLY node.
+             // If it's the only node, we can't wrap it (infinite loop).
+             if (splitIndex === 0 && row.nodes.length === 1) {
+                // Do nothing, let it overflow
+             } else {
+                // If splitIndex is 0 but there are other nodes, we move them ALL? 
+                // That means this row becomes empty. That's fine, we essentially push everything down.
+                
+                const overflowNodes = row.nodes.splice(splitIndex); // Remove from current
+                
+                // Determine target Y for next row
+                const nextY = row.y + config.lineHeight;
+                
+                // Check if next row exists
+                if (i + 1 < sortedRows.length) {
+                   const nextRow = sortedRows[i + 1];
+                   // If next row is close enough to target Y, merge.
+                   if (Math.abs(nextRow.y - nextY) < config.rowTolerance) {
+                      // Update Y of overflow nodes to match next row
+                      overflowNodes.forEach(n => n.y = nextRow.y);
+                      // Prepend to next row? Actually we should just add them, and let the sort in next iteration handle it.
+                      // But since we want them to be at the *start* of the next line (wrapping), 
+                      // we should probably reset their X to startX?
+                      // If we don't reset X, they might be sorted to the end if next row nodes are to the left.
+                      // But `calculateLayout` sets X.
+                      // Here we are resolving overlaps. 
+                      // If we move them to next row, we should probably set their X to startX to ensure they are first?
+                      // Or just let sort handle it? Existing nodes in next row might be anywhere.
+                      
+                      // Better strategy: Reset X of overflow nodes to startX (approx) so they sort to the beginning.
+                      // We subtract a large value to ensure they are sorted BEFORE any existing nodes on that line.
+                      // We maintain their relative order.
+                      overflowNodes.forEach(n => { n.y = nextRow.y; n.x = startX - 10000 + n.x; });
+                      
+                      nextRow.nodes.push(...overflowNodes);
+                   } else {
+                      // Next row is too far down or we need to insert a new row between i and i+1?
+                      // If nextRow.y > nextY + tolerance, we can insert a new row.
+                      // If nextRow.y < nextY (shouldn't happen due to sort), logic holds.
+                      
+                      // Insert new row
+                      overflowNodes.forEach(n => { n.y = nextY; n.x = startX; }); // New row, just start at startX
+                      sortedRows.splice(i + 1, 0, { y: nextY, nodes: overflowNodes });
+                   }
+                } else {
+                   // No next row, create one
+                   overflowNodes.forEach(n => { n.y = nextY; n.x = startX; });
+                   sortedRows.push({ y: nextY, nodes: overflowNodes });
+                }
+             }
+          }
+       }
+    }
+  }
   
-  return adjustedNodes;
+  return sortedRows.flatMap(r => r.nodes);
 };
 
 // Gap Closing
@@ -828,7 +921,7 @@ export default function App() {
       `}>
         <div className="flex items-center space-x-2">
           <BookOpen className={`w-5 h-5 ${isBookMode ? 'text-[#8b5e3c]' : 'text-indigo-600'}`} />
-          <h1 className={`text-lg font-semibold hidden sm:block ${isBookMode ? 'text-[#5a4231] font-serif' : 'text-gray-800'}`}>ScriptureMap</h1>
+          <h1 className={`text-lg font-semibold hidden sm:block ${isBookMode ? 'text-[#5a4231] font-serif' : 'text-gray-800'}`}>VerseAxis</h1>
         </div>
 
         <div className={`flex items-center space-x-3 rounded-lg p-1 ${isBookMode ? 'bg-[#E6DCC8]' : 'bg-gray-100'}`}>

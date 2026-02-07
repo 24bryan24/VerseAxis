@@ -23,10 +23,19 @@ import {
   Loader2,
   FileText, 
   Layout,
-  Search
+  Search,
+  Eraser
 } from 'lucide-react';
 
 // --- Constants & Config ---
+
+const HIGHLIGHT_COLORS = [
+  { id: 'yellow', label: 'Yellow', dot: '#FACC15', bookClass: 'bg-yellow-200/50', canvasClass: 'bg-yellow-50 border-yellow-200' },
+  { id: 'green', label: 'Green', dot: '#4ADE80', bookClass: 'bg-green-200/50', canvasClass: 'bg-green-50 border-green-200' },
+  { id: 'blue', label: 'Blue', dot: '#60A5FA', bookClass: 'bg-blue-200/50', canvasClass: 'bg-blue-50 border-blue-200' },
+  { id: 'pink', label: 'Pink', dot: '#F472B6', bookClass: 'bg-pink-200/50', canvasClass: 'bg-pink-50 border-pink-200' },
+  { id: 'purple', label: 'Purple', dot: '#C084FC', bookClass: 'bg-purple-200/50', canvasClass: 'bg-purple-50 border-purple-200' },
+];
 
 const DEFAULT_PASSAGE = "Romans 5:1-10";
 const DEFAULT_TEXT = `Therefore, since we have been justified by faith, we have peace with God through our Lord Jesus Christ. Through him we have also obtained access by faith into this grace in which we stand, and we rejoice in hope of the glory of God. Not only that, but we rejoice in our sufferings, knowing that suffering produces endurance, and endurance produces character, and character produces hope, and hope does not put us to shame, because God's love has been poured into our hearts through the Holy Spirit who has been given to us. For while we were still weak, at the right time Christ died for the ungodly. For one will scarcely die for a righteous person—though perhaps for a good person one would dare even to die— but God shows his love for us in that while we were still sinners, Christ died for us. Since, therefore, we have now been justified by his blood, much more shall we be saved by him from the wrath of God. For if while we were enemies we were reconciled to God by the death of his Son, much more, now that we are reconciled, shall we be saved by his life.`;
@@ -139,11 +148,6 @@ const getDescendants = (nodeId, allNodes) => {
   return descendants;
 };
 
-const getWeight = (nodeId, allNodes) => {
-  const count = getDescendants(nodeId, allNodes).length;
-  return Math.min(3.0, 1 + (count * 0.075)); 
-};
-
 // Auto-Layout
 const resolveOverlaps = (currentNodes, mode = 'book') => {
   const config = LAYOUT_CONFIG[mode];
@@ -186,8 +190,8 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
       const current = row.nodes[j];
       const next = row.nodes[j+1];
       
-      const currentScale = getWeight(current.id, adjustedNodes) * (current.styles.scale || 1);
-      const nextScale = getWeight(next.id, adjustedNodes) * (next.styles.scale || 1);
+      const currentScale = current.styles.scale || 1;
+      const nextScale = next.styles.scale || 1;
       
       const currentHalfWidth = (estimateWidth(current.text, isBook) * currentScale) / 2;
       const nextHalfWidth = (estimateWidth(next.text, isBook) * nextScale) / 2;
@@ -211,7 +215,7 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
     // 3. Check for Overflow (Book Mode only)
     if (isBook && row.nodes.length > 0) {
        const lastNode = row.nodes[row.nodes.length - 1];
-       const lastNodeScale = getWeight(lastNode.id, adjustedNodes) * (lastNode.styles.scale || 1);
+       const lastNodeScale = lastNode.styles.scale || 1;
        const lastNodeRight = lastNode.x + (estimateWidth(lastNode.text, isBook) * lastNodeScale) / 2;
 
        if (lastNodeRight > maxRightEdge) {
@@ -224,7 +228,7 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
           let splitIndex = -1;
           for (let k = 0; k < row.nodes.length; k++) {
              const node = row.nodes[k];
-             const scale = getWeight(node.id, adjustedNodes) * (node.styles.scale || 1);
+             const scale = node.styles.scale || 1;
              const right = node.x + (estimateWidth(node.text, isBook) * scale) / 2;
              if (right > maxRightEdge) {
                 splitIndex = k;
@@ -526,6 +530,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [currentReference, setCurrentReference] = useState(DEFAULT_PASSAGE);
+  const [lastHighlightColor, setLastHighlightColor] = useState('yellow');
   
   const [aiResponse, setAiResponse] = useState(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -694,7 +699,17 @@ export default function App() {
 
       if (isMultiAction) {
         if (isAlreadySelected) pendingDeselect = true;
-        else newSelection.push(nodeId);
+        else {
+          newSelection.push(nodeId);
+          // When we now have 2+ different words, keep only primary (first word) + explicitly added words — drop other matches of the first word
+          const norm = (t) => (t || '').toLowerCase().replace(/[^\w\s]/gi, '');
+          const primaryId = selection[0];
+          const firstWordNorm = primaryId ? norm(nodes.find(n => n.id === primaryId)?.text || '') : '';
+          const hasMultipleWords = new Set(newSelection.map(id => norm(nodes.find(n => n.id === id)?.text || ''))).size > 1;
+          if (hasMultipleWords && firstWordNorm) {
+            newSelection = newSelection.filter(id => id === primaryId || norm(nodes.find(n => n.id === id)?.text || '') !== firstWordNorm);
+          }
+        }
         setSelection(newSelection);
       } else {
         // Single selection logic:
@@ -879,6 +894,28 @@ export default function App() {
     setSatelliteHover(null);
   };
 
+  const setHighlight = (colorId) => {
+    if (selection.length === 0) return;
+    setLastHighlightColor(colorId);
+    const newNodes = nodes.map(n => selection.includes(n.id) ? { ...n, styles: { ...n.styles, highlight: colorId } } : n);
+    updateNodes(newNodes, true);
+  };
+
+  const clearFormatting = () => {
+    if (selection.length === 0) return;
+    const newNodes = nodes.map(n => selection.includes(n.id) ? { 
+      ...n, 
+      styles: { 
+        bold: false, 
+        italic: false, 
+        underline: false, 
+        highlight: null,
+        scale: 1 
+      } 
+    } : n);
+    updateNodes(newNodes, true);
+  };
+
   const toggleStyle = (styleKey) => {
     if (selection.length === 0) return;
     const newNodes = nodes.map(n => selection.includes(n.id) ? { ...n, styles: { ...n.styles, [styleKey]: !n.styles[styleKey] } } : n);
@@ -1047,10 +1084,49 @@ export default function App() {
            <button onClick={() => toggleStyle('bold')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Bold className="w-4 h-4"/></button>
            <button onClick={() => toggleStyle('italic')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Italic className="w-4 h-4"/></button>
            <button onClick={() => toggleStyle('underline')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Underline className="w-4 h-4"/></button>
-           <button onClick={() => toggleStyle('highlight')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Highlighter className="w-4 h-4"/></button>
+           
            <div className="w-px h-4 bg-gray-300 mx-1"></div>
+           
+           <div className="relative group/highlight">
+             <button 
+               onClick={() => setHighlight(lastHighlightColor)} 
+               className="p-2 hover:bg-gray-100 rounded-full text-gray-600 flex items-center justify-center"
+             >
+               <Highlighter className="w-4 h-4" style={{ color: HIGHLIGHT_COLORS.find(c => c.id === lastHighlightColor)?.dot }} />
+             </button>
+             
+             {/* Color Popup */}
+             <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 bg-white rounded-full shadow-xl border border-gray-100 p-1.5 flex space-x-1 opacity-0 group-hover/highlight:opacity-100 pointer-events-none group-hover/highlight:pointer-events-auto transition-opacity duration-200 z-50">
+                {HIGHLIGHT_COLORS.map(c => (
+                  <button 
+                    key={c.id}
+                    onClick={(e) => { e.stopPropagation(); setHighlight(c.id); }} 
+                    className="w-5 h-5 rounded-full hover:scale-110 transition-transform ring-1 ring-black/5"
+                    style={{ backgroundColor: c.dot }}
+                    title={c.label}
+                  />
+                ))}
+             </div>
+           </div>
+
+           <div className="w-px h-4 bg-gray-300 mx-1"></div>
+           
            <button onClick={() => changeFontSize(0.1)} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 font-bold text-xs">A+</button>
            <button onClick={() => changeFontSize(-0.1)} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 font-bold text-xs">A-</button>
+           
+           <div className="w-px h-4 bg-gray-300 mx-1"></div>
+
+           <button onClick={clearFormatting} className="p-2 hover:bg-gray-100 rounded-full text-gray-600" title="Clear Formatting">
+             <Eraser className="w-4 h-4" />
+           </button>
+           
+           <button onClick={undo} disabled={historyIndex <= 0} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 disabled:opacity-30">
+             <Undo2 className="w-4 h-4" />
+           </button>
+           <button onClick={redo} disabled={historyIndex >= history.length - 1} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 disabled:opacity-30">
+             <Redo2 className="w-4 h-4" />
+           </button>
+
            <div className="w-px h-4 bg-gray-300 mx-1"></div>
            
            <button onClick={triggerWordStudy} className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-full flex items-center space-x-1">
@@ -1101,18 +1177,43 @@ export default function App() {
           <Connections nodes={nodes} selection={selection} connectionMode={connectionMode} viewMode={viewMode} />
 
           {/* Nodes */}
-          {nodes.map(node => {
+          {(() => {
+            const selectedNodes = nodes.filter(n => selection.includes(n.id));
+            const norm = (t) => (t || '').toLowerCase().replace(/[^\w\s]/gi, '');
+            const sameWordSelection = selectedNodes.length > 0 && selectedNodes.every(n => norm(n.text) === norm(selectedNodes[0].text));
+            const primaryNode = selection.length > 0 ? nodes.find(n => n.id === selection[0]) : null;
+            const firstWordNorm = primaryNode ? norm(primaryNode.text) : '';
+            return nodes.map(node => {
             if (connectionMode === 'hidden' && node.parentId) return null;
 
             const descendantCount = getDescendants(node.id, nodes).length;
-            const weight = getWeight(node.id, nodes);
             const userScale = node.styles.scale || 1;
-            const finalScale = weight * userScale;
+            const finalScale = userScale;
 
             const isSelected = selection.includes(node.id);
-            const isPrimarySelection = selection[0] === node.id; // The one actually clicked/first in list
+            const isPrimarySelection = selection[0] === node.id;
+            // Only use two underline colors when selection is "same word" (clicked word + its matches); otherwise all selected get same underline
+            const usePrimarySecondaryUnderline = isSelected && sameWordSelection;
+            // When 2+ words selected: don't underline "matches of the first word" (same text as primary but not the primary)
+            const isMatchOfFirstWord = isSelected && !sameWordSelection && node.id !== selection[0] && norm(node.text) === firstWordNorm;
             const isMoving = dragState?.idsToMove?.has(node.id);
             const isHoverTarget = hoverTarget === node.id;
+
+            // Resolve Highlight Class
+            let highlightClass = '';
+            const hColorId = node.styles.highlight === true ? 'yellow' : node.styles.highlight; // Handle legacy boolean
+            if (hColorId) {
+               const hConfig = HIGHLIGHT_COLORS.find(c => c.id === hColorId) || HIGHLIGHT_COLORS[0];
+               highlightClass = isBookMode ? `${hConfig.bookClass} rounded-sm` : `${hConfig.canvasClass}`;
+            }
+
+            let underlineClass = '';
+            if (isBookMode && isSelected && !isMatchOfFirstWord) {
+              if (usePrimarySecondaryUnderline)
+                underlineClass = isPrimarySelection ? 'underline decoration-indigo-600 decoration-2' : 'underline decoration-yellow-400 decoration-2';
+              else
+                underlineClass = 'underline decoration-indigo-600 decoration-2';
+            }
 
             return (
               <div
@@ -1125,9 +1226,8 @@ export default function App() {
                     : `rounded-lg shadow-sm border px-3 py-1.5 ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-gray-200 bg-white'}`
                   }
                   ${!isBookMode && isHoverTarget ? 'ring-4 ring-indigo-100 scale-105 border-indigo-300' : ''}
-                  ${!isBookMode && node.styles.highlight ? 'bg-yellow-50 border-yellow-200' : ''}
-                  ${isBookMode && node.styles.highlight ? 'bg-yellow-200/40 rounded-sm' : ''} 
-                  ${isBookMode && isSelected ? (isPrimarySelection ? 'underline decoration-indigo-600 decoration-2' : 'underline decoration-yellow-400 decoration-2') : ''}
+                  ${highlightClass}
+                  ${underlineClass}
                 `}
                 style={{
                   left: node.x,
@@ -1170,7 +1270,8 @@ export default function App() {
                 )}
               </div>
             );
-          })}
+          });
+          })()}
           
           {/* Marquee Selection Box */}
           {dragState?.type === 'box-select' && (

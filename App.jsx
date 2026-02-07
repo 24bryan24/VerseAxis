@@ -713,7 +713,7 @@ export default function App() {
         setSelection(newSelection);
       } else {
         // Single selection logic:
-        // If clicking an already selected node, do nothing (wait for drag/up).
+        // If clicking an already selected node, mark to clear selection on pointer up (closes styling popup).
         // If clicking a new node, select it AND find all matching words.
         if (!isAlreadySelected) {
            const clickedNode = nodes.find(n => n.id === nodeId);
@@ -748,14 +748,13 @@ export default function App() {
 
       setDragState({
         type: 'node', mainNodeId: nodeId, startX: coords.x, startY: coords.y,
-        idsToMove, initialPositions, hasMoved: false, pendingDeselect, pointerId: e.pointerId
+        idsToMove, initialPositions, hasMoved: false, pendingDeselect, pendingClearSelection: !isMultiAction && isAlreadySelected, pointerId: e.pointerId
       });
     } else {
       if (multiSelectMode || e.shiftKey) {
         setDragState({ type: 'box-select', startX: coords.x, startY: coords.y, currentX: coords.x, currentY: coords.y, pointerId: e.pointerId });
       } else {
-        if (viewMode === 'book') return;
-        setSelection([]); 
+        setSelection([]);
         setDragState({ type: 'canvas', startX: e.clientX, startY: e.clientY, initialOffsetX: offset.x, initialOffsetY: offset.y, hasMoved: false, pointerId: e.pointerId });
       }
     }
@@ -844,7 +843,9 @@ export default function App() {
     if (e.target.hasPointerCapture(e.pointerId)) e.target.releasePointerCapture(e.pointerId);
 
     if (dragState.type === 'node') {
-      if (!dragState.hasMoved && dragState.pendingDeselect) {
+      if (!dragState.hasMoved && dragState.pendingClearSelection) {
+        setSelection([]);
+      } else if (!dragState.hasMoved && dragState.pendingDeselect) {
         setSelection(prev => prev.filter(id => id !== dragState.mainNodeId));
       }
       if (dragState.hasMoved) {

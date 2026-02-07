@@ -342,58 +342,37 @@ const closeGaps = (currentNodes, movedItems, mode = 'book') => {
 
 const NODE_HEIGHT = 40; 
 
-const Satellites = React.memo(({ nodes, targetId, satelliteHover, isDraggingNode }) => {
+const Satellites = React.memo(({ nodes, targetId, satelliteHover, viewMode }) => {
   const target = nodes.find(n => n.id === targetId);
-  if (!target) return null;
+  if (!target || !satelliteHover) return null;
 
-  const radius = 70;
+  const opt = SATELLITE_OPTIONS.find(o => o.id === satelliteHover);
+  if (!opt) return null;
+
+  const isBook = viewMode === 'book';
+  const bubbleMinWidth = estimateWidth(target.text, isBook);
 
   return (
     <div 
-      className="absolute pointer-events-none z-40"
-      style={{ left: target.x, top: target.y }}
+      className="absolute pointer-events-none z-40 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center"
+      style={{ left: target.x, top: target.y, minWidth: bubbleMinWidth }}
     >
-      <style>
-        {`
-          @keyframes satellite-enter {
-            from { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
-            to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+      <div 
+        className={`flex items-center justify-center
+          ${isBook 
+            ? 'bg-transparent border-0 shadow-none px-2 py-1 font-serif text-[22px] leading-tight' 
+            : 'rounded-lg shadow-sm border border-gray-200 bg-white px-3 py-1.5 text-base font-sans'
           }
         `}
-      </style>
-      {SATELLITE_OPTIONS.map((opt, i) => {
-        const angle = (i * 60) * (Math.PI / 180);
-        const x = Math.cos(angle) * radius;
-        const y = Math.sin(angle) * radius;
-        const isHovered = satelliteHover === opt.id;
-
-        return (
-          <div
-            key={opt.id}
-            className="absolute"
-            style={{ 
-              left: x, 
-              top: y,
-              animation: 'satellite-enter 0.5s cubic-bezier(0.19, 1, 0.22, 1) forwards', 
-              pointerEvents: isDraggingNode ? 'auto' : 'none'
-            }}
-          >
-            <div 
-              className={`flex items-center justify-center w-12 h-12 rounded-full shadow-lg transition-transform duration-200 ease-out
-                ${isHovered ? 'scale-125 ring-2 ring-white z-50' : 'scale-100 opacity-90'}
-              `}
-              style={{ backgroundColor: opt.color }}
-            >
-              <span className="text-[10px] font-bold text-white">{opt.label}</span>
-            </div>
-            {isHovered && (
-              <div className="absolute top-14 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded w-32 text-center shadow-xl z-50 animate-fade-in">
-                {opt.hint}
-              </div>
-            )}
-          </div>
-        );
-      })}
+        style={{ minWidth: bubbleMinWidth }}
+      >
+        <span 
+          className="font-bold whitespace-nowrap"
+          style={{ color: opt.color }}
+        >
+          {opt.label}
+        </span>
+      </div>
     </div>
   );
 });
@@ -782,8 +761,29 @@ export default function App() {
       if (!dragState.hasMoved) {
          const dx = coords.x - dragState.startX;
          const dy = coords.y - dragState.startY;
-         if (Math.hypot(dx, dy) > 3) setDragState(prev => ({ ...prev, hasMoved: true }));
-         else return;
+         if (Math.hypot(dx, dy) <= 3) return;
+         const movingRoots = nodes.filter(n => dragState.idsToMove.has(n.id) && !n.parentId);
+         const norm = (t) => (t || '').toLowerCase().replace(/[^\w\s]/gi, '');
+         const sameWordDrag = movingRoots.length > 1 && movingRoots.every(n => norm(n.text) === norm(movingRoots[0].text));
+         if (sameWordDrag) {
+           const narrowedIds = new Set([dragState.mainNodeId, ...getDescendants(dragState.mainNodeId, nodes).map(d => d.id)]);
+           const nextNodes = nodes.map(n => {
+             if (dragState.idsToMove.has(n.id) && !narrowedIds.has(n.id)) {
+               const init = dragState.initialPositions[n.id];
+               return init ? { ...n, x: init.x, y: init.y } : n;
+             }
+             if (narrowedIds.has(n.id)) {
+               const init = dragState.initialPositions[n.id];
+               return init ? { ...n, x: init.x + dx, y: init.y + dy } : n;
+             }
+             return n;
+           });
+           setNodes(nextNodes);
+           setSelection([dragState.mainNodeId]);
+           setDragState(prev => ({ ...prev, hasMoved: true, idsToMove: narrowedIds }));
+           return;
+         }
+         setDragState(prev => ({ ...prev, hasMoved: true }));
       }
 
       const rawDx = coords.x - dragState.startX;
@@ -829,13 +829,12 @@ export default function App() {
         potentialTargets.sort((a, b) => Math.hypot(a.x - mainNode.x, a.y - mainNode.y) - Math.hypot(b.x - mainNode.x, b.y - mainNode.y));
         const target = potentialTargets[0];
         foundTarget = target.id;
-        const satRadius = 70;
-        SATELLITE_OPTIONS.forEach((sat, i) => {
-          const angle = (i * 60) * (Math.PI / 180);
-          const satX = target.x + Math.cos(angle) * satRadius;
-          const satY = target.y + Math.sin(angle) * satRadius;
-          if (Math.hypot(coords.x - satX, coords.y - satY) < 35) foundSat = sat.id;
-        });
+        const isBook = viewMode === 'book';
+        const wordWidth = estimateWidth(target.text, isBook);
+        const leftEdge = target.x - wordWidth / 2;
+        const relX = coords.x - leftEdge;
+        const zoneIndex = Math.max(0, Math.min(5, Math.floor((relX / wordWidth) * 6)));
+        foundSat = SATELLITE_OPTIONS[zoneIndex].id;
       }
       setHoverTarget(foundTarget);
       setSatelliteHover(foundSat);
@@ -1291,8 +1290,8 @@ export default function App() {
                     ? 'bg-transparent border-0 shadow-none p-0' 
                     : `rounded-lg shadow-sm border px-3 py-1.5 ${canvasSelectedClass} ${canvasHighlightClass}`
                   }
-                  ${!isBookMode && isHoverTarget && !usePrimarySecondaryUnderline ? 'ring-4 ring-indigo-100 scale-105 border-indigo-300' : ''}
-                  ${!isBookMode && isHoverTarget && usePrimarySecondaryUnderline && !isPrimarySelection ? 'ring-4 ring-yellow-100 scale-105 border-yellow-300' : ''}
+                  ${!isBookMode && isHoverTarget && dragState?.type !== 'node' && !usePrimarySecondaryUnderline ? 'ring-4 ring-indigo-100 scale-105 border-indigo-300' : ''}
+                  ${!isBookMode && isHoverTarget && dragState?.type !== 'node' && usePrimarySecondaryUnderline && !isPrimarySelection ? 'ring-4 ring-yellow-100 scale-105 border-yellow-300' : ''}
                   ${underlineClass}
                 `}
                 style={{
@@ -1357,8 +1356,8 @@ export default function App() {
             <Satellites 
               nodes={nodes} 
               targetId={hoverTarget} 
-              satelliteHover={satelliteHover} 
-              isDraggingNode={dragState?.type === 'node'}
+              satelliteHover={satelliteHover}
+              viewMode={viewMode}
             />
           )}
 

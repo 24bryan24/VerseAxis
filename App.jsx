@@ -856,18 +856,24 @@ export default function App() {
           const snapY = parent.y + gap; 
           const snapX = parent.x;
           
+          const norm = (t) => (t || '').toLowerCase().replace(/[^\w\s]/gi, '');
+          const selectedMoving = nodes.filter(n => dragState.idsToMove.has(n.id) && selection.includes(n.id));
+          const sameWordDrop = selectedMoving.length > 0 && selectedMoving.every(n => norm(n.text) === norm(selectedMoving[0].text));
+          const idsToNest = sameWordDrop ? [dragState.mainNodeId] : selectedMoving.map(n => n.id);
+
           const movedRoots = [];
-          dragState.idsToMove.forEach(id => {
+          idsToNest.forEach(id => {
              const currentNode = nodes.find(n => n.id === id);
-             if (currentNode && !currentNode.parentId) {
+             if (currentNode && !currentNode.parentId && dragState.initialPositions[id]) {
                 movedRoots.push({ id, text: currentNode.text, oldX: dragState.initialPositions[id].x, oldY: dragState.initialPositions[id].y, wasRoot: true });
              }
           });
 
           const nextNodes = nodes.map(n => {
             if (dragState.idsToMove.has(n.id)) {
-               if (selection.includes(n.id)) return { ...n, parentId: hoverTarget, relation: satelliteHover, x: snapX, y: snapY };
-               return { ...n, x: snapX, y: snapY }; 
+               if (idsToNest.includes(n.id)) return { ...n, parentId: hoverTarget, relation: satelliteHover, x: snapX, y: snapY };
+               const orig = dragState.initialPositions[n.id];
+               return orig ? { ...n, x: orig.x, y: orig.y } : { ...n, x: snapX, y: snapY };
             }
             return n;
           });
@@ -1026,22 +1032,21 @@ export default function App() {
           </button>
         </form>
 
-        <div className={`flex items-center space-x-3 rounded-lg p-1 ${isBookMode ? 'bg-[#E6DCC8]' : 'bg-gray-100'}`}>
-          <button onClick={undo} disabled={historyIndex <= 0} className="p-1.5 rounded hover:bg-white/50 text-gray-600 disabled:opacity-30 transition">
-            <Undo2 className="w-4 h-4" />
+        <div className={`flex items-center gap-1 rounded-full px-2 py-1.5 mr-4 ${isBookMode ? 'bg-[#E6DCC8]/60' : 'bg-gray-100/80'}`}>
+          <button onClick={undo} disabled={historyIndex <= 0} className="p-1 rounded-full hover:bg-black/5 text-gray-500 disabled:opacity-30 transition" title="Undo">
+            <Undo2 className="w-3.5 h-3.5" />
           </button>
-          <div className="w-px h-4 bg-gray-300/50"></div>
-          <button onClick={redo} disabled={historyIndex >= history.length - 1} className="p-1.5 rounded hover:bg-white/50 text-gray-600 disabled:opacity-30 transition">
-             <Redo2 className="w-4 h-4" />
+          <button onClick={redo} disabled={historyIndex >= history.length - 1} className="p-1 rounded-full hover:bg-black/5 text-gray-500 disabled:opacity-30 transition" title="Redo">
+             <Redo2 className="w-3.5 h-3.5" />
           </button>
-          <div className="w-px h-4 bg-gray-300/50"></div>
-          
+          <div className="w-px h-3 bg-gray-300/60 mx-0.5" aria-hidden="true" />
           <button 
             onClick={() => setMultiSelectMode(!multiSelectMode)}
-            className={`p-1.5 rounded transition flex items-center space-x-1 ${multiSelectMode ? 'bg-indigo-600 text-white shadow-sm' : 'hover:bg-white/50 text-gray-600'}`}
+            className={`p-1 rounded-full transition flex items-center gap-1 ${multiSelectMode ? 'bg-indigo-600 text-white shadow-sm' : 'hover:bg-black/5 text-gray-500'}`}
+            title={multiSelectMode ? 'Multi (Box) select' : 'Single select'}
           >
-             {multiSelectMode ? <CheckSquare className="w-4 h-4"/> : <MousePointer2 className="w-4 h-4"/>}
-             <span className="text-xs font-medium hidden xs:block">{multiSelectMode ? 'Multi (Box)' : 'Select'}</span>
+             {multiSelectMode ? <CheckSquare className="w-3.5 h-3.5"/> : <MousePointer2 className="w-3.5 h-3.5"/>}
+             <span className="text-[10px] font-medium hidden xs:inline">{multiSelectMode ? 'Multi' : 'Select'}</span>
           </button>
         </div>
 
@@ -1216,6 +1221,11 @@ export default function App() {
                 underlineClass = 'underline decoration-indigo-600 decoration-2';
             }
 
+            const canvasSelectedClass = !isBookMode && isSelected && usePrimarySecondaryUnderline && !isPrimarySelection
+              ? 'border-yellow-400 ring-2 ring-yellow-200 bg-yellow-50'
+              : !isBookMode && isSelected
+                ? 'border-indigo-500 ring-2 ring-indigo-200'
+                : !isBookMode ? 'border-gray-200 bg-white' : '';
             return (
               <div
                 key={node.id}
@@ -1224,9 +1234,10 @@ export default function App() {
                   ${isMoving ? 'cursor-grabbing' : 'cursor-grab'}
                   ${isBookMode 
                     ? 'bg-transparent border-0 shadow-none p-0' 
-                    : `rounded-lg shadow-sm border px-3 py-1.5 ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-gray-200 bg-white'}`
+                    : `rounded-lg shadow-sm border px-3 py-1.5 ${canvasSelectedClass}`
                   }
-                  ${!isBookMode && isHoverTarget ? 'ring-4 ring-indigo-100 scale-105 border-indigo-300' : ''}
+                  ${!isBookMode && isHoverTarget && !usePrimarySecondaryUnderline ? 'ring-4 ring-indigo-100 scale-105 border-indigo-300' : ''}
+                  ${!isBookMode && isHoverTarget && usePrimarySecondaryUnderline && !isPrimarySelection ? 'ring-4 ring-yellow-100 scale-105 border-yellow-300' : ''}
                   ${highlightClass}
                   ${underlineClass}
                 `}

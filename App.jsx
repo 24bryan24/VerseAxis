@@ -68,14 +68,18 @@ const LAYOUT_CONFIG = {
     wordSpacing: 15,
     rowTolerance: 30,
     minGap: 25,
-    fontScale: 1
+    fontScale: 1,
+    nestedGap: 100,
+    nestedChildSpacing: 16
   },
   book: {
     lineHeight: 48, 
     wordSpacing: 6, 
     rowTolerance: 15,
     minGap: 6,
-    fontScale: 1.15 
+    fontScale: 1.15,
+    nestedGap: 56,
+    nestedChildSpacing: 12
   }
 };
 
@@ -153,6 +157,65 @@ const getDescendants = (nodeId, allNodes) => {
   return descendants;
 };
 
+// When connections are visible: layout nested children with spacing and push root words down to make room
+const computeDisplayNodes = (currentNodes, connectionMode, viewMode) => {
+  if (connectionMode === 'hidden') return currentNodes;
+  const config = LAYOUT_CONFIG[viewMode === 'book' ? 'book' : 'canvas'];
+  const isBook = viewMode === 'book';
+  const { nestedGap, nestedChildSpacing, lineHeight, rowTolerance } = config;
+  const nodes = currentNodes.map(n => ({ ...n }));
+
+  const parentsWithChildren = [];
+  nodes.forEach(n => {
+    if (n.parentId) return;
+    const children = nodes.filter(c => c.parentId === n.id);
+    if (children.length > 0) parentsWithChildren.push({ parent: n, children: children.sort((a, b) => (a.relation || '').localeCompare(b.relation || '') || a.id.localeCompare(b.id)) });
+  });
+
+  parentsWithChildren.forEach(({ parent, children }) => {
+    const baseY = parent.y + nestedGap;
+    const totalWidth = children.reduce((sum, c) => sum + estimateWidth(c.text, isBook) * (c.styles?.scale || 1), 0) + (children.length - 1) * nestedChildSpacing;
+    let cursorX = parent.x - totalWidth / 2;
+    children.forEach((child, i) => {
+      const w = estimateWidth(child.text, isBook) * (child.styles?.scale || 1);
+      child.x = cursorX + w / 2;
+      child.y = baseY;
+      cursorX += w + nestedChildSpacing;
+    });
+  });
+
+  const rootNodes = nodes.filter(n => !n.parentId);
+  if (rootNodes.length === 0) return nodes;
+  const rows = [];
+  rootNodes.forEach(n => {
+    const row = rows.find(r => Math.abs(r.y - n.y) < rowTolerance);
+    if (row) row.nodes.push(n); else rows.push({ y: n.y, nodes: [n] });
+  });
+  rows.sort((a, b) => a.y - b.y);
+
+  const nestedHeightByRow = rows.map((row, ri) => {
+    const parentsOnRow = parentsWithChildren.filter(p => row.nodes.some(rn => rn.id === p.parent.id));
+    if (parentsOnRow.length === 0) return 0;
+    let maxBottom = row.y;
+    parentsOnRow.forEach(({ children }) => {
+      children.forEach(c => {
+        const h = (isBook ? 14 : 20) * (c.styles?.scale || 1);
+        maxBottom = Math.max(maxBottom, c.y + h);
+      });
+    });
+    return Math.max(0, maxBottom - row.y + 12);
+  });
+
+  let cumulative = 0;
+  rows.forEach((row, ri) => {
+    const push = cumulative;
+    row.nodes.forEach(n => { n.y += push; });
+    cumulative += nestedHeightByRow[ri];
+  });
+
+  return nodes;
+};
+
 // Auto-Layout
 const resolveOverlaps = (currentNodes, mode = 'book') => {
   const config = LAYOUT_CONFIG[mode];
@@ -167,7 +230,8 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
 
   const rows = {};
   const adjustedNodes = currentNodes.map(n => ({...n}));
-  const sortedByY = [...adjustedNodes].sort((a, b) => a.y - b.y);
+  const rootNodes = adjustedNodes.filter(n => !n.parentId);
+  const sortedByY = [...rootNodes].sort((a, b) => a.y - b.y);
   
   sortedByY.forEach(node => {
     let foundRowKey = Object.keys(rows).find(key => Math.abs(parseFloat(key) - node.y) < config.rowTolerance);
@@ -298,18 +362,17 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
     }
   }
   
-  return sortedRows.flatMap(r => r.nodes);
+  return adjustedNodes;
 };
 
 // Gap Closing
 const closeGaps = (currentNodes, movedItems, mode = 'book') => {
   const config = LAYOUT_CONFIG[mode];
   const isBook = mode === 'book';
-  let adjustedNodes = [...currentNodes];
+  let adjustedNodes = currentNodes.map(n => ({ ...n }));
+  const sortedItems = [...movedItems].filter(i => i.wasRoot).sort((a, b) => b.oldX - a.oldX);
   
-  movedItems.forEach(item => {
-    if (!item.wasRoot) return; 
-    
+  sortedItems.forEach(item => {
     const gapX = item.oldX;
     const gapY = item.oldY;
     const gapWidth = estimateWidth(item.text, isBook); 
@@ -335,6 +398,78 @@ const closeGaps = (currentNodes, movedItems, mode = 'book') => {
     }
   });
   
+  return adjustedNodes;
+};
+
+// Compact a row's nodes flush left (no leading gap); preserves order by current x
+const compactRowLeft = (nodes, startX, config, isBook) => {
+  if (nodes.length === 0) return;
+  nodes.sort((a, b) => a.x - b.x);
+  let cursor = startX;
+  nodes.forEach(node => {
+    const w = estimateWidth(node.text, isBook) * (node.styles?.scale || 1);
+    node.x = cursor + w / 2;
+    cursor += w + config.minGap;
+  });
+};
+
+// After closing gaps, fill each line by pulling words up from the next line; compact so no gaps
+const fillLines = (currentNodes, mode = 'book') => {
+  const config = LAYOUT_CONFIG[mode];
+  const isBook = mode === 'book';
+  const windowWidth = window.innerWidth;
+  const containerWidth = isBook
+    ? Math.min(650, windowWidth * 0.55)
+    : (windowWidth > 800 ? 800 : windowWidth - 40);
+  const startX = (windowWidth - containerWidth) / 2;
+  const maxRightEdge = startX + containerWidth;
+
+  const adjustedNodes = currentNodes.map(n => ({ ...n }));
+  const rootNodes = adjustedNodes.filter(n => !n.parentId);
+  if (rootNodes.length === 0) return adjustedNodes;
+
+  const rows = [];
+  rootNodes.forEach(node => {
+    const row = rows.find(r => Math.abs(r.y - node.y) < config.rowTolerance);
+    if (row) row.nodes.push(node);
+    else rows.push({ y: node.y, nodes: [node] });
+  });
+  rows.sort((a, b) => a.y - b.y);
+
+  rows.forEach(r => compactRowLeft(r.nodes, startX, config, isBook));
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    row.nodes.sort((a, b) => a.x - b.x);
+    let rightEdge = row.nodes.length > 0
+      ? row.nodes[row.nodes.length - 1].x + (estimateWidth(row.nodes[row.nodes.length - 1].text, isBook) * (row.nodes[row.nodes.length - 1].styles?.scale || 1)) / 2
+      : startX;
+
+    while (i + 1 < rows.length && rows[i + 1].nodes.length > 0) {
+      const nextRow = rows[i + 1];
+      nextRow.nodes.sort((a, b) => a.x - b.x);
+      const node = nextRow.nodes[0];
+      const w = estimateWidth(node.text, isBook) * (node.styles?.scale || 1);
+      if (rightEdge + config.minGap + w > maxRightEdge) break;
+      node.x = rightEdge + config.minGap + w / 2;
+      node.y = row.y;
+      rightEdge = node.x + w / 2;
+      row.nodes.push(node);
+      nextRow.nodes.shift();
+    }
+    if (i + 1 < rows.length && rows[i + 1].nodes.length > 0) {
+      compactRowLeft(rows[i + 1].nodes, startX, config, isBook);
+    }
+  }
+
+  const nonEmptyRows = rows.filter(r => r.nodes.length > 0);
+  if (nonEmptyRows.length === 0) return adjustedNodes;
+  let currentY = nonEmptyRows[0].y;
+  nonEmptyRows.forEach((r, idx) => {
+    r.nodes.forEach(n => { n.y = currentY; });
+    if (idx < nonEmptyRows.length - 1) currentY += config.lineHeight;
+  });
+
   return adjustedNodes;
 };
 
@@ -862,9 +997,8 @@ export default function App() {
       if (dragState.hasMoved) {
         if (hoverTarget && satelliteHover) {
           const parent = nodes.find(n => n.id === hoverTarget);
-          
-          const gap = viewMode === 'book' ? 40 : 120;
-          const snapY = parent.y + gap; 
+          const layoutConfig = LAYOUT_CONFIG[viewMode === 'book' ? 'book' : 'canvas'];
+          const snapY = parent.y + layoutConfig.nestedGap; 
           const snapX = parent.x;
           
           const norm = (t) => (t || '').toLowerCase().replace(/[^\w\s]/gi, '');
@@ -889,8 +1023,9 @@ export default function App() {
             return n;
           });
           
-          const filledNodes = closeGaps(nextNodes, movedRoots, viewMode);
-          updateNodes(filledNodes, true); 
+          const afterGaps = closeGaps(nextNodes, movedRoots, viewMode);
+          const filledNodes = fillLines(afterGaps, viewMode);
+          updateNodes(filledNodes, false); 
         } else {
           updateNodes([...nodes], false);
         }
@@ -1010,9 +1145,32 @@ export default function App() {
   const ActiveModeIcon = CONNECTION_MODES.find(m => m.id === connectionMode)?.icon || EyeOff;
   const activeModeLabel = CONNECTION_MODES.find(m => m.id === connectionMode)?.label || 'Hidden';
   const isBookMode = viewMode === 'book';
-
-  const maxNodeY = nodes.length > 0 ? Math.max(...nodes.map(n => n.y)) : 0;
+  const displayNodes = React.useMemo(() => computeDisplayNodes(nodes, connectionMode, viewMode), [nodes, connectionMode, viewMode]);
+  const maxNodeY = displayNodes.length > 0 ? Math.max(...displayNodes.map(n => n.y)) : 0;
   const contentHeight = isBookMode ? Math.max(window.innerHeight, maxNodeY + 200) : '100%';
+
+  const nestedRegions = React.useMemo(() => {
+    if (connectionMode === 'hidden') return [];
+    const isBook = viewMode === 'book';
+    const padding = 14;
+    const groups = {};
+    displayNodes.forEach(n => {
+      if (!n.parentId) return;
+      const key = n.parentId;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(n);
+    });
+    return Object.entries(groups).map(([, children]) => {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      children.forEach(c => {
+        const w = (estimateWidth(c.text, isBook) * (c.styles?.scale || 1)) / 2;
+        minX = Math.min(minX, c.x - w); maxX = Math.max(maxX, c.x + w);
+        const h = (isBook ? 14 : 20) * (c.styles?.scale || 1);
+        minY = Math.min(minY, c.y - h); maxY = Math.max(maxY, c.y + h);
+      });
+      return { left: minX - padding, top: minY - padding, width: maxX - minX + padding * 2, height: maxY - minY + padding * 2 };
+    });
+  }, [displayNodes, connectionMode, viewMode]);
 
   return (
     <div 
@@ -1232,7 +1390,21 @@ export default function App() {
             </div>
           )}
 
-          <Connections nodes={nodes} selection={selection} connectionMode={connectionMode} viewMode={viewMode} />
+          {connectionMode !== 'hidden' && nestedRegions.map((r, i) => (
+            <div
+              key={`nested-bg-${i}`}
+              className="absolute rounded-xl pointer-events-none z-0"
+              style={{
+                left: r.left,
+                top: r.top,
+                width: r.width,
+                height: r.height,
+                background: isBookMode ? 'rgba(230, 220, 200, 0.5)' : 'rgba(243, 244, 246, 0.85)',
+                border: isBookMode ? '1px solid rgba(215, 201, 168, 0.6)' : '1px solid rgba(229, 231, 235, 0.9)'
+              }}
+            />
+          ))}
+          <Connections nodes={displayNodes} selection={selection} connectionMode={connectionMode} viewMode={viewMode} />
 
           {/* Nodes */}
           {(() => {
@@ -1241,7 +1413,7 @@ export default function App() {
             const sameWordSelection = selectedNodes.length > 0 && selectedNodes.every(n => norm(n.text) === norm(selectedNodes[0].text));
             const primaryNode = selection.length > 0 ? nodes.find(n => n.id === selection[0]) : null;
             const firstWordNorm = primaryNode ? norm(primaryNode.text) : '';
-            return nodes.map(node => {
+            return displayNodes.map(node => {
             if (connectionMode === 'hidden' && node.parentId) return null;
 
             const descendantCount = getDescendants(node.id, nodes).length;
@@ -1354,7 +1526,7 @@ export default function App() {
 
           {hoverTarget && dragState?.type === 'node' && (
             <Satellites 
-              nodes={nodes} 
+              nodes={displayNodes} 
               targetId={hoverTarget} 
               satelliteHover={satelliteHover}
               viewMode={viewMode}

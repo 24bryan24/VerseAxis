@@ -30,16 +30,16 @@ import {
 // --- Constants & Config ---
 
 const HIGHLIGHT_COLORS = [
-  { id: 'yellow', label: 'Yellow', dot: '#FACC15', bookClass: 'bg-yellow-200/50', canvasClass: 'bg-yellow-50 border-yellow-200' },
-  { id: 'orange', label: 'Orange', dot: '#FB923C', bookClass: 'bg-orange-200/50', canvasClass: 'bg-orange-50 border-orange-200' },
-  { id: 'red', label: 'Red', dot: '#F87171', bookClass: 'bg-red-200/50', canvasClass: 'bg-red-50 border-red-200' },
-  { id: 'green', label: 'Green', dot: '#4ADE80', bookClass: 'bg-green-200/50', canvasClass: 'bg-green-50 border-green-200' },
-  { id: 'teal', label: 'Teal', dot: '#2DD4BF', bookClass: 'bg-teal-200/50', canvasClass: 'bg-teal-50 border-teal-200' },
-  { id: 'cyan', label: 'Cyan', dot: '#22D3EE', bookClass: 'bg-cyan-200/50', canvasClass: 'bg-cyan-50 border-cyan-200' },
-  { id: 'blue', label: 'Blue', dot: '#60A5FA', bookClass: 'bg-blue-200/50', canvasClass: 'bg-blue-50 border-blue-200' },
-  { id: 'indigo', label: 'Indigo', dot: '#818CF8', bookClass: 'bg-indigo-200/50', canvasClass: 'bg-indigo-50 border-indigo-200' },
-  { id: 'purple', label: 'Purple', dot: '#C084FC', bookClass: 'bg-purple-200/50', canvasClass: 'bg-purple-50 border-purple-200' },
-  { id: 'pink', label: 'Pink', dot: '#F472B6', bookClass: 'bg-pink-200/50', canvasClass: 'bg-pink-50 border-pink-200' },
+  { id: 'yellow', label: 'Yellow', dot: '#FACC15', bookClass: 'bg-yellow-300/75', canvasClass: 'bg-yellow-200 border-yellow-400' },
+  { id: 'orange', label: 'Orange', dot: '#FB923C', bookClass: 'bg-orange-300/75', canvasClass: 'bg-orange-200 border-orange-400' },
+  { id: 'red', label: 'Red', dot: '#F87171', bookClass: 'bg-red-300/75', canvasClass: 'bg-red-200 border-red-400' },
+  { id: 'green', label: 'Green', dot: '#4ADE80', bookClass: 'bg-green-300/75', canvasClass: 'bg-green-200 border-green-400' },
+  { id: 'teal', label: 'Teal', dot: '#2DD4BF', bookClass: 'bg-teal-300/75', canvasClass: 'bg-teal-200 border-teal-400' },
+  { id: 'cyan', label: 'Cyan', dot: '#22D3EE', bookClass: 'bg-cyan-300/75', canvasClass: 'bg-cyan-200 border-cyan-400' },
+  { id: 'blue', label: 'Blue', dot: '#60A5FA', bookClass: 'bg-blue-300/75', canvasClass: 'bg-blue-200 border-blue-400' },
+  { id: 'indigo', label: 'Indigo', dot: '#818CF8', bookClass: 'bg-indigo-300/75', canvasClass: 'bg-indigo-200 border-indigo-400' },
+  { id: 'purple', label: 'Purple', dot: '#C084FC', bookClass: 'bg-purple-300/75', canvasClass: 'bg-purple-200 border-purple-400' },
+  { id: 'pink', label: 'Pink', dot: '#F472B6', bookClass: 'bg-pink-300/75', canvasClass: 'bg-pink-200 border-pink-400' },
 ];
 
 const DEFAULT_PASSAGE = "Romans 5:1-10";

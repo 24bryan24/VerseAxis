@@ -697,8 +697,23 @@ export default function App() {
         else newSelection.push(nodeId);
         setSelection(newSelection);
       } else {
+        // Single selection logic:
+        // If clicking an already selected node, do nothing (wait for drag/up).
+        // If clicking a new node, select it AND find all matching words.
         if (!isAlreadySelected) {
-           newSelection = [nodeId];
+           const clickedNode = nodes.find(n => n.id === nodeId);
+           if (clickedNode) {
+             const targetWord = clickedNode.text.toLowerCase().replace(/[^\w\s]/gi, ''); // Normalize
+             
+             const matchingIds = nodes.filter(n => {
+               const nWord = n.text.toLowerCase().replace(/[^\w\s]/gi, '');
+               return nWord === targetWord;
+             }).map(n => n.id);
+             
+             newSelection = matchingIds;
+           } else {
+             newSelection = [nodeId];
+           }
            setSelection(newSelection);
         }
       }
@@ -1095,6 +1110,7 @@ export default function App() {
             const finalScale = weight * userScale;
 
             const isSelected = selection.includes(node.id);
+            const isPrimarySelection = selection[0] === node.id; // The one actually clicked/first in list
             const isMoving = dragState?.idsToMove?.has(node.id);
             const isHoverTarget = hoverTarget === node.id;
 
@@ -1111,7 +1127,7 @@ export default function App() {
                   ${!isBookMode && isHoverTarget ? 'ring-4 ring-indigo-100 scale-105 border-indigo-300' : ''}
                   ${!isBookMode && node.styles.highlight ? 'bg-yellow-50 border-yellow-200' : ''}
                   ${isBookMode && node.styles.highlight ? 'bg-yellow-200/40 rounded-sm' : ''} 
-                  ${isBookMode && isSelected ? 'underline decoration-indigo-400 decoration-2' : ''}
+                  ${isBookMode && isSelected ? (isPrimarySelection ? 'underline decoration-indigo-600 decoration-2' : 'underline decoration-yellow-400 decoration-2') : ''}
                 `}
                 style={{
                   left: node.x,

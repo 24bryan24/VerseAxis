@@ -31,10 +31,15 @@ import {
 
 const HIGHLIGHT_COLORS = [
   { id: 'yellow', label: 'Yellow', dot: '#FACC15', bookClass: 'bg-yellow-200/50', canvasClass: 'bg-yellow-50 border-yellow-200' },
+  { id: 'orange', label: 'Orange', dot: '#FB923C', bookClass: 'bg-orange-200/50', canvasClass: 'bg-orange-50 border-orange-200' },
+  { id: 'red', label: 'Red', dot: '#F87171', bookClass: 'bg-red-200/50', canvasClass: 'bg-red-50 border-red-200' },
   { id: 'green', label: 'Green', dot: '#4ADE80', bookClass: 'bg-green-200/50', canvasClass: 'bg-green-50 border-green-200' },
+  { id: 'teal', label: 'Teal', dot: '#2DD4BF', bookClass: 'bg-teal-200/50', canvasClass: 'bg-teal-50 border-teal-200' },
+  { id: 'cyan', label: 'Cyan', dot: '#22D3EE', bookClass: 'bg-cyan-200/50', canvasClass: 'bg-cyan-50 border-cyan-200' },
   { id: 'blue', label: 'Blue', dot: '#60A5FA', bookClass: 'bg-blue-200/50', canvasClass: 'bg-blue-50 border-blue-200' },
-  { id: 'pink', label: 'Pink', dot: '#F472B6', bookClass: 'bg-pink-200/50', canvasClass: 'bg-pink-50 border-pink-200' },
+  { id: 'indigo', label: 'Indigo', dot: '#818CF8', bookClass: 'bg-indigo-200/50', canvasClass: 'bg-indigo-50 border-indigo-200' },
   { id: 'purple', label: 'Purple', dot: '#C084FC', bookClass: 'bg-purple-200/50', canvasClass: 'bg-purple-50 border-purple-200' },
+  { id: 'pink', label: 'Pink', dot: '#F472B6', bookClass: 'bg-pink-200/50', canvasClass: 'bg-pink-50 border-pink-200' },
 ];
 
 const DEFAULT_PASSAGE = "Romans 5:1-10";
@@ -531,6 +536,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [currentReference, setCurrentReference] = useState(DEFAULT_PASSAGE);
   const [lastHighlightColor, setLastHighlightColor] = useState('yellow');
+  const [showHighlighterColors, setShowHighlighterColors] = useState(false);
+  const highlighterCloseTimerRef = useRef(null);
   
   const [aiResponse, setAiResponse] = useState(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -545,6 +552,11 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState(-1);
 
   const canvasRef = useRef(null);
+
+  // Clear highlighter close timer on unmount (e.g. when toolbar hides)
+  useEffect(() => () => {
+    if (highlighterCloseTimerRef.current) clearTimeout(highlighterCloseTimerRef.current);
+  }, []);
 
   // Initial Load
   useEffect(() => {
@@ -724,8 +736,8 @@ export default function App() {
                const nWord = n.text.toLowerCase().replace(/[^\w\s]/gi, '');
                return nWord === targetWord;
              }).map(n => n.id);
-             
-             newSelection = matchingIds;
+             // Put clicked word first so it is always the "primary" (normal styling); matches get yellow
+             newSelection = [nodeId, ...matchingIds.filter(id => id !== nodeId)];
            } else {
              newSelection = [nodeId];
            }
@@ -903,8 +915,22 @@ export default function App() {
 
   const setHighlight = (colorId) => {
     if (selection.length === 0) return;
-    setLastHighlightColor(colorId);
-    const newNodes = nodes.map(n => selection.includes(n.id) ? { ...n, styles: { ...n.styles, highlight: colorId } } : n);
+    const norm = (t) => (t || '').toLowerCase().replace(/[^\w\s]/gi, '');
+    const selectedNodes = nodes.filter(n => selection.includes(n.id));
+    const sameWordSelection = selectedNodes.length > 0 && selectedNodes.every(n => norm(n.text) === norm(selectedNodes[0].text));
+    const idsToApply = sameWordSelection ? [selection[0]] : selection;
+
+    const alreadyThisColor = idsToApply.every(id => {
+      const node = nodes.find(n => n.id === id);
+      const current = node?.styles?.highlight;
+      return current === colorId || (current === true && colorId === 'yellow');
+    });
+    const newHighlight = alreadyThisColor ? false : colorId;
+    if (!alreadyThisColor) setLastHighlightColor(colorId);
+
+    const newNodes = nodes.map(n =>
+      idsToApply.includes(n.id) ? { ...n, styles: { ...n.styles, highlight: newHighlight } } : n
+    );
     updateNodes(newNodes, true);
   };
 
@@ -1086,33 +1112,60 @@ export default function App() {
 
       {/* --- Context Toolbar --- */}
       {selection.length > 0 && (
-        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 bg-white/90 backdrop-blur rounded-full shadow-xl border border-gray-100 p-2 flex items-center space-x-2 z-50 animate-bounce-in max-w-[95vw] overflow-x-auto">
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 bg-white/90 backdrop-blur rounded-full shadow-xl border border-gray-100 p-2 flex items-center space-x-2 z-50 animate-bounce-in max-w-[95vw] overflow-visible">
            <button onClick={() => toggleStyle('bold')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Bold className="w-4 h-4"/></button>
            <button onClick={() => toggleStyle('italic')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Italic className="w-4 h-4"/></button>
            <button onClick={() => toggleStyle('underline')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><Underline className="w-4 h-4"/></button>
            
            <div className="w-px h-4 bg-gray-300 mx-1"></div>
            
-           <div className="relative group/highlight">
+           <div
+             className="relative overflow-visible"
+             onMouseEnter={() => {
+               if (highlighterCloseTimerRef.current) {
+                 clearTimeout(highlighterCloseTimerRef.current);
+                 highlighterCloseTimerRef.current = null;
+               }
+               setShowHighlighterColors(true);
+             }}
+             onMouseLeave={() => {
+               highlighterCloseTimerRef.current = setTimeout(() => setShowHighlighterColors(false), 300);
+             }}
+           >
              <button 
                onClick={() => setHighlight(lastHighlightColor)} 
                className="p-2 hover:bg-gray-100 rounded-full text-gray-600 flex items-center justify-center"
+               title="Highlight (hover for colors)"
              >
                <Highlighter className="w-4 h-4" style={{ color: HIGHLIGHT_COLORS.find(c => c.id === lastHighlightColor)?.dot }} />
              </button>
              
-             {/* Color Popup */}
-             <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 bg-white rounded-full shadow-xl border border-gray-100 p-1.5 flex space-x-1 opacity-0 group-hover/highlight:opacity-100 pointer-events-none group-hover/highlight:pointer-events-auto transition-opacity duration-200 z-50">
-                {HIGHLIGHT_COLORS.map(c => (
-                  <button 
-                    key={c.id}
-                    onClick={(e) => { e.stopPropagation(); setHighlight(c.id); }} 
-                    className="w-5 h-5 rounded-full hover:scale-110 transition-transform ring-1 ring-black/5"
-                    style={{ backgroundColor: c.dot }}
-                    title={c.label}
-                  />
-                ))}
-             </div>
+             {/* Color Popup - above highlighter; delay before closing so user can move to popup and click */}
+             {showHighlighterColors && (
+               <div
+                 className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-white rounded-full shadow-xl border border-gray-100 p-1.5 flex space-x-1 z-[100]"
+                 onMouseEnter={() => {
+                   if (highlighterCloseTimerRef.current) {
+                     clearTimeout(highlighterCloseTimerRef.current);
+                     highlighterCloseTimerRef.current = null;
+                   }
+                   setShowHighlighterColors(true);
+                 }}
+                 onMouseLeave={() => {
+                   highlighterCloseTimerRef.current = setTimeout(() => setShowHighlighterColors(false), 300);
+                 }}
+               >
+                 {HIGHLIGHT_COLORS.map(c => (
+                   <button 
+                     key={c.id}
+                     onClick={(e) => { e.stopPropagation(); setHighlight(c.id); }} 
+                     className="w-5 h-5 rounded-full hover:scale-110 transition-transform ring-1 ring-black/5"
+                     style={{ backgroundColor: c.dot }}
+                     title={c.label}
+                   />
+                 ))}
+               </div>
+             )}
            </div>
 
            <div className="w-px h-4 bg-gray-300 mx-1"></div>
@@ -1205,12 +1258,14 @@ export default function App() {
             const isMoving = dragState?.idsToMove?.has(node.id);
             const isHoverTarget = hoverTarget === node.id;
 
-            // Resolve Highlight Class
+            // Resolve Highlight Class: book = letters only (span); canvas = whole bubble (div)
             let highlightClass = '';
+            let canvasHighlightClass = '';
             const hColorId = node.styles.highlight === true ? 'yellow' : node.styles.highlight; // Handle legacy boolean
             if (hColorId) {
                const hConfig = HIGHLIGHT_COLORS.find(c => c.id === hColorId) || HIGHLIGHT_COLORS[0];
-               highlightClass = isBookMode ? `${hConfig.bookClass} rounded-sm` : `${hConfig.canvasClass}`;
+               highlightClass = isBookMode ? `${hConfig.bookClass} rounded-sm` : '';
+               canvasHighlightClass = !isBookMode ? `${hConfig.canvasClass}` : '';
             }
 
             let underlineClass = '';
@@ -1222,23 +1277,22 @@ export default function App() {
             }
 
             const canvasSelectedClass = !isBookMode && isSelected && usePrimarySecondaryUnderline && !isPrimarySelection
-              ? 'border-yellow-400 ring-2 ring-yellow-200 bg-yellow-50'
+              ? (canvasHighlightClass ? 'border-yellow-400 ring-2 ring-yellow-200' : 'border-yellow-400 ring-2 ring-yellow-200 bg-yellow-50')
               : !isBookMode && isSelected
                 ? 'border-indigo-500 ring-2 ring-indigo-200'
-                : !isBookMode ? 'border-gray-200 bg-white' : '';
+                : !isBookMode && !canvasHighlightClass ? 'border-gray-200 bg-white' : !isBookMode ? 'border-gray-200' : '';
             return (
               <div
                 key={node.id}
                 onPointerDown={(e) => { handlePointerDown(e, node.id); }}
                 className={`absolute group flex items-center justify-center px-2 py-1 transition-all duration-300 ease-out z-10
-                  ${isMoving ? 'cursor-grabbing' : 'cursor-grab'}
+                  ${isMoving ? 'cursor-grabbing' : 'cursor-pointer'}
                   ${isBookMode 
                     ? 'bg-transparent border-0 shadow-none p-0' 
-                    : `rounded-lg shadow-sm border px-3 py-1.5 ${canvasSelectedClass}`
+                    : `rounded-lg shadow-sm border px-3 py-1.5 ${canvasSelectedClass} ${canvasHighlightClass}`
                   }
                   ${!isBookMode && isHoverTarget && !usePrimarySecondaryUnderline ? 'ring-4 ring-indigo-100 scale-105 border-indigo-300' : ''}
                   ${!isBookMode && isHoverTarget && usePrimarySecondaryUnderline && !isPrimarySelection ? 'ring-4 ring-yellow-100 scale-105 border-yellow-300' : ''}
-                  ${highlightClass}
                   ${underlineClass}
                 `}
                 style={{
@@ -1249,11 +1303,12 @@ export default function App() {
                 }}
               >
                 <span 
-                  className={`whitespace-nowrap pointer-events-none select-none
+                  className={`whitespace-nowrap pointer-events-none select-none rounded-sm
                     ${isBookMode ? 'text-[#2D2D2D] font-serif leading-tight' : 'text-gray-800 font-sans'}
                     ${node.styles.bold ? 'font-bold' : 'font-normal'}
                     ${node.styles.italic ? 'italic' : ''}
                     ${node.styles.underline ? 'underline' : ''}
+                    ${highlightClass}
                   `}
                   style={{ 
                     fontFamily: isBookMode ? '"Crimson Text", serif' : 'inherit',

@@ -22,7 +22,8 @@ import {
   Sparkles,
   Loader2,
   FileText, 
-  Layout    
+  Layout,
+  Search
 } from 'lucide-react';
 
 // --- Constants & Config ---
@@ -86,7 +87,7 @@ const calculateLayout = (nodesToLayout, mode) => {
     : (windowWidth > 800 ? 800 : windowWidth - 40); 
 
   const startX = (windowWidth - containerWidth) / 2;
-  const startY = 100;
+  const startY = 160;
   
   let currentX = startX;
   let currentY = startY;
@@ -520,9 +521,11 @@ export default function App() {
   const [hoverTarget, setHoverTarget] = useState(null); 
   const [satelliteHover, setSatelliteHover] = useState(null); 
   
-  const [apiKey, setApiKey] = useState('');
+  const [apiKey, setApiKey] = useState(import.meta.env.VITE_ESV_API_KEY || '');
   const [showSettings, setShowSettings] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [currentReference, setCurrentReference] = useState(DEFAULT_PASSAGE);
   
   const [aiResponse, setAiResponse] = useState(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -883,18 +886,41 @@ export default function App() {
         let text = "";
         if (!apiKey) {
             if (reference.toLowerCase().includes("romans 5")) text = DEFAULT_TEXT;
-            else { alert("Please provide an ESV API Key"); text = DEFAULT_TEXT; }
+            else { 
+                alert("Please provide an ESV API Key in settings or .env"); 
+                setLoading(false);
+                return;
+            }
         } else {
             const response = await fetch(`https://api.esv.org/v3/passage/text/?q=${encodeURIComponent(reference)}&include-headings=false&include-footnotes=false&include-verse-numbers=false`, { headers: { Authorization: `Token ${apiKey}` } });
             const data = await response.json();
-            text = data.passages[0];
+            if (data.passages && data.passages.length > 0) {
+                text = data.passages[0];
+                setCurrentReference(reference);
+            } else {
+                alert("No passage found.");
+                setLoading(false);
+                return;
+            }
         }
         const newNodes = splitTextToNodes(text, viewMode);
         updateNodes(newNodes, true);
         setOffset({ x: 0, y: 0 });
         setScale(1);
         setSelection([]);
-    } catch (error) { alert("Failed to fetch passage."); } finally { setLoading(false); }
+    } catch (error) { 
+        console.error(error);
+        alert("Failed to fetch passage."); 
+    } finally { 
+        setLoading(false); 
+    }
+  };
+
+  const handleSearch = (e) => {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      fetchPassage(searchQuery);
+    }
   };
 
   const ActiveModeIcon = CONNECTION_MODES.find(m => m.id === connectionMode)?.icon || EyeOff;
@@ -923,6 +949,29 @@ export default function App() {
           <BookOpen className={`w-5 h-5 ${isBookMode ? 'text-[#8b5e3c]' : 'text-indigo-600'}`} />
           <h1 className={`text-lg font-semibold hidden sm:block ${isBookMode ? 'text-[#5a4231] font-serif' : 'text-gray-800'}`}>VerseAxis</h1>
         </div>
+
+        {/* Search Bar */}
+        <form onSubmit={handleSearch} className="flex-1 max-w-md mx-4 relative">
+          <input 
+            type="text" 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search passage (e.g. John 3:16)"
+            className={`w-full pl-4 pr-10 py-1.5 rounded-full text-sm border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors
+              ${isBookMode 
+                ? 'bg-[#F9F5EB] border-[#D7C9A8] text-[#5a4231] placeholder-[#8b5e3c]/50' 
+                : 'bg-gray-50 border-gray-200 text-gray-800 placeholder-gray-400'
+              }
+            `}
+          />
+          <button 
+            type="submit"
+            disabled={loading}
+            className={`absolute right-2 top-1/2 transform -translate-y-1/2 p-1 rounded-full hover:bg-black/5 transition-colors ${isBookMode ? 'text-[#8b5e3c]' : 'text-gray-400'} ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+          </button>
+        </form>
 
         <div className={`flex items-center space-x-3 rounded-lg p-1 ${isBookMode ? 'bg-[#E6DCC8]' : 'bg-gray-100'}`}>
           <button onClick={undo} disabled={historyIndex <= 0} className="p-1.5 rounded hover:bg-white/50 text-gray-600 disabled:opacity-30 transition">
@@ -1028,6 +1077,12 @@ export default function App() {
             height: '100%'
           }}
         >
+          {isBookMode && (
+            <div className="absolute top-8 w-full text-center pointer-events-none z-0">
+              <h2 className="text-3xl font-bold text-[#5a4231] font-serif mb-8">{currentReference}</h2>
+            </div>
+          )}
+
           <Connections nodes={nodes} selection={selection} connectionMode={connectionMode} viewMode={viewMode} />
 
           {/* Nodes */}
@@ -1123,6 +1178,17 @@ export default function App() {
             />
           )}
 
+          {isBookMode && (
+            <div 
+              className="absolute w-full text-center pointer-events-none pb-20"
+              style={{ top: maxNodeY + 100 }}
+            >
+              <span className="font-serif text-sm text-[#8b5e3c] italic opacity-60">
+                &#123; ESV &#125;
+              </span>
+            </div>
+          )}
+
         </div>
       </div>
 
@@ -1180,19 +1246,6 @@ export default function App() {
                 <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5"/></button>
               </div>
               <div className="space-y-4">
-                 <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Passage Selector</label>
-                    <div className="flex space-x-2">
-                       <input type="text" placeholder="e.g., John 3:16" className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" id="passageInput"/>
-                       <button 
-                         onClick={() => fetchPassage(document.getElementById('passageInput').value)}
-                         disabled={loading}
-                         className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
-                       >
-                         {loading ? '...' : 'Load'}
-                       </button>
-                    </div>
-                 </div>
                  <div className="pt-4 border-t border-gray-100">
                     <label className="block text-sm font-medium text-gray-700 mb-1">ESV API Key</label>
                     <input 

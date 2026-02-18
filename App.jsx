@@ -24,7 +24,8 @@ import {
   FileText, 
   Layout,
   Search,
-  Eraser
+  Eraser,
+  List
 } from 'lucide-react';
 
 // --- Constants & Config ---
@@ -70,18 +71,22 @@ const LAYOUT_CONFIG = {
     minGap: 25,
     fontScale: 1,
     nestedGap: 100,
-    nestedChildSpacing: 16
+    nestedChildSpacing: 16,
+    sentenceGap: 16
   },
   book: {
-    lineHeight: 48, 
-    wordSpacing: 6, 
+    lineHeight: 48,
+    wordSpacing: 6,
     rowTolerance: 15,
     minGap: 6,
     fontScale: 1.15,
     nestedGap: 56,
-    nestedChildSpacing: 12
+    nestedChildSpacing: 12,
+    sentenceGap: 28
   }
 };
+
+const SIDE_MARGIN = 24;
 
 // --- Helper Functions ---
 
@@ -94,25 +99,25 @@ const estimateWidth = (text, isBookMode) => {
   return (text.length * charWidth) + padding;
 };
 
+const endsSentence = (text) => /[.!?]$/.test((text || '').trim());
+
 // Calculates the initial layout for a mode
-const calculateLayout = (nodesToLayout, mode) => {
+const calculateLayout = (nodesToLayout, mode, options = {}) => {
   const config = LAYOUT_CONFIG[mode];
   const isBook = mode === 'book';
-  
-  const windowWidth = window.innerWidth;
-  const containerWidth = isBook 
-    ? Math.min(650, windowWidth * 0.55) 
-    : (windowWidth > 800 ? 800 : windowWidth - 40); 
+  const sentencesOnSeparateLines = !!options.sentencesOnSeparateLines;
 
-  const startX = (windowWidth - containerWidth) / 2;
+  const windowWidth = window.innerWidth;
+  const containerWidth = windowWidth - 2 * SIDE_MARGIN;
+  const startX = SIDE_MARGIN;
   const startY = 160;
-  
+
   let currentX = startX;
   let currentY = startY;
 
   return nodesToLayout.map(node => {
     const w = estimateWidth(node.text, isBook);
-    
+
     if (currentX + w > startX + containerWidth) {
       currentX = startX;
       currentY += config.lineHeight;
@@ -125,17 +130,21 @@ const calculateLayout = (nodesToLayout, mode) => {
     };
 
     currentX += w + config.wordSpacing;
+    if (sentencesOnSeparateLines && endsSentence(node.text)) {
+      currentX = startX;
+      currentY += config.lineHeight + (config.sentenceGap ?? 0);
+    }
     return newNode;
   });
 };
 
-const splitTextToNodes = (text, mode = 'book') => {
+const splitTextToNodes = (text, mode = 'book', options = {}) => {
   const words = text.split(/\s+/);
   const rawNodes = words.map((word) => ({
     id: generateId(),
     text: word,
     parentId: null,
-    relation: null, 
+    relation: null,
     styles: {
       bold: false,
       italic: false,
@@ -145,7 +154,7 @@ const splitTextToNodes = (text, mode = 'book') => {
     },
     collapsed: false,
   }));
-  return calculateLayout(rawNodes, mode);
+  return calculateLayout(rawNodes, mode, options);
 };
 
 const getDescendants = (nodeId, allNodes) => {
@@ -222,10 +231,8 @@ const resolveOverlaps = (currentNodes, mode = 'book') => {
   const isBook = mode === 'book';
   
   const windowWidth = window.innerWidth;
-  const containerWidth = isBook 
-    ? Math.min(650, windowWidth * 0.55) 
-    : (windowWidth > 800 ? 800 : windowWidth - 40); 
-  const startX = (windowWidth - containerWidth) / 2;
+  const containerWidth = windowWidth - 2 * SIDE_MARGIN;
+  const startX = SIDE_MARGIN;
   const maxRightEdge = startX + containerWidth;
 
   const rows = {};
@@ -414,19 +421,24 @@ const compactRowLeft = (nodes, startX, config, isBook) => {
 };
 
 // After closing gaps, fill each line by pulling words up from the next line; compact so no gaps
-const fillLines = (currentNodes, mode = 'book') => {
+const fillLines = (currentNodes, mode = 'book', options = {}) => {
   const config = LAYOUT_CONFIG[mode];
   const isBook = mode === 'book';
+  const sentencesOnSeparateLines = !!options.sentencesOnSeparateLines;
   const windowWidth = window.innerWidth;
-  const containerWidth = isBook
-    ? Math.min(650, windowWidth * 0.55)
-    : (windowWidth > 800 ? 800 : windowWidth - 40);
-  const startX = (windowWidth - containerWidth) / 2;
+  const containerWidth = windowWidth - 2 * SIDE_MARGIN;
+  const startX = SIDE_MARGIN;
   const maxRightEdge = startX + containerWidth;
 
   const adjustedNodes = currentNodes.map(n => ({ ...n }));
   const rootNodes = adjustedNodes.filter(n => !n.parentId);
   if (rootNodes.length === 0) return adjustedNodes;
+
+  if (sentencesOnSeparateLines) {
+    rootNodes.forEach((n, i) => {
+      n.isSentenceStart = i === 0 || endsSentence(rootNodes[i - 1].text);
+    });
+  }
 
   const rows = [];
   rootNodes.forEach(node => {
@@ -449,6 +461,7 @@ const fillLines = (currentNodes, mode = 'book') => {
       const nextRow = rows[i + 1];
       nextRow.nodes.sort((a, b) => a.x - b.x);
       const node = nextRow.nodes[0];
+      if (sentencesOnSeparateLines && node.isSentenceStart) break;
       const w = estimateWidth(node.text, isBook) * (node.styles?.scale || 1);
       if (rightEdge + config.minGap + w > maxRightEdge) break;
       node.x = rightEdge + config.minGap + w / 2;
@@ -477,7 +490,9 @@ const fillLines = (currentNodes, mode = 'book') => {
 
 const NODE_HEIGHT = 40; 
 
-const Satellites = React.memo(({ nodes, targetId, satelliteHover, viewMode }) => {
+const STACK_OFFSET = 2; // px inset per layer on left and right only (no top/bottom)
+
+const Satellites = React.memo(({ nodes, targetId, satelliteHover, indentOnRight, viewMode }) => {
   const target = nodes.find(n => n.id === targetId);
   if (!target || !satelliteHover) return null;
 
@@ -486,28 +501,46 @@ const Satellites = React.memo(({ nodes, targetId, satelliteHover, viewMode }) =>
 
   const isBook = viewMode === 'book';
   const bubbleMinWidth = estimateWidth(target.text, isBook);
+  const zoneIndex = SATELLITE_OPTIONS.findIndex(o => o.id === satelliteHover);
+  const nestLevel = zoneIndex >= 0 ? zoneIndex + 1 : 1;
+  // indentOnRight is set once when entering the word (from pointer side) and kept for the whole hover
+
+  const bubbleBaseClass = isBook
+    ? 'bg-transparent border-0 shadow-none px-2 py-1 font-serif text-[22px] leading-tight'
+    : 'rounded-lg shadow-sm border border-gray-200 bg-white px-3 py-1.5 text-base font-sans';
+  const bubbleStyle = { minWidth: bubbleMinWidth, minHeight: isBook ? undefined : 40 };
 
   return (
-    <div 
-      className="absolute pointer-events-none z-40 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center"
-      style={{ left: target.x, top: target.y, minWidth: bubbleMinWidth }}
+    <div
+      className="absolute pointer-events-none z-[100] transform -translate-x-1/2 -translate-y-1/2 overflow-visible"
+      style={{ left: target.x, top: target.y, width: bubbleMinWidth, minHeight: isBook ? 32 : 40 }}
     >
-      <div 
-        className={`flex items-center justify-center
-          ${isBook 
-            ? 'bg-transparent border-0 shadow-none px-2 py-1 font-serif text-[22px] leading-tight' 
-            : 'rounded-lg shadow-sm border border-gray-200 bg-white px-3 py-1.5 text-base font-sans'
-          }
-        `}
-        style={{ minWidth: bubbleMinWidth }}
-      >
-        <span 
-          className="font-bold whitespace-nowrap"
-          style={{ color: opt.color }}
-        >
-          {opt.label}
-        </span>
-      </div>
+      {Array.from({ length: nestLevel }, (_, i) => {
+        const layerIndex = nestLevel - 1 - i;
+        const inset = layerIndex * STACK_OFFSET;
+        const layerWidth = bubbleMinWidth - inset;
+        const layerOpt = SATELLITE_OPTIONS[layerIndex];
+        return (
+          <div
+            key={i}
+            className={`absolute flex items-center justify-center ${bubbleBaseClass}`}
+            style={{
+              ...bubbleStyle,
+              left: indentOnRight ? 0 : inset,
+              top: 0,
+              width: layerWidth,
+              minWidth: layerWidth,
+              zIndex: layerIndex,
+            }}
+          >
+            {layerOpt ? (
+              <span className="font-bold whitespace-nowrap" style={{ color: layerOpt.color }}>
+                {layerOpt.label}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 });
@@ -642,7 +675,8 @@ export default function App() {
 
   const [dragState, setDragState] = useState(null); 
   const [hoverTarget, setHoverTarget] = useState(null); 
-  const [satelliteHover, setSatelliteHover] = useState(null); 
+  const [satelliteHover, setSatelliteHover] = useState(null);
+  const [satelliteIndentOnRight, setSatelliteIndentOnRight] = useState(true); 
   
   const [apiKey, setApiKey] = useState(import.meta.env.VITE_ESV_API_KEY || '');
   const [showSettings, setShowSettings] = useState(false);
@@ -658,7 +692,8 @@ export default function App() {
   const [showAiModal, setShowAiModal] = useState(false);
   
   const [connectionMode, setConnectionMode] = useState('hidden'); 
-  const [viewMode, setViewMode] = useState('book'); 
+  const [viewMode, setViewMode] = useState('book');
+  const [sentencesOnSeparateLines, setSentencesOnSeparateLines] = useState(false); 
   
   const positionsCache = useRef({ canvas: {}, book: {} });
   
@@ -666,6 +701,23 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState(-1);
 
   const canvasRef = useRef(null);
+  const layoutInputRef = useRef({ nodes: [], viewMode: 'book', sentencesOnSeparateLines: false });
+  layoutInputRef.current = { nodes, viewMode, sentencesOnSeparateLines };
+
+  // Reflow on window resize so text fills the new width
+  useEffect(() => {
+    const onResize = () => {
+      const { nodes: currentNodes, viewMode: mode, sentencesOnSeparateLines: sep } = layoutInputRef.current;
+      if (currentNodes.length === 0) return;
+      const roots = currentNodes.filter(n => !n.parentId);
+      const children = currentNodes.filter(n => n.parentId);
+      const laidOut = calculateLayout(roots, mode, { sentencesOnSeparateLines: sep });
+      const combined = fillLines([...laidOut, ...children], mode, { sentencesOnSeparateLines: sep });
+      setNodes(combined);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // Clear highlighter close timer on unmount (e.g. when toolbar hides)
   useEffect(() => () => {
@@ -674,7 +726,7 @@ export default function App() {
 
   // Initial Load
   useEffect(() => {
-    const initialNodes = splitTextToNodes(DEFAULT_TEXT, 'book');
+    const initialNodes = splitTextToNodes(DEFAULT_TEXT, 'book', { sentencesOnSeparateLines: false });
     const resolvedNodes = resolveOverlaps(initialNodes, 'book');
     setNodes(resolvedNodes);
     saveToHistory(resolvedNodes);
@@ -734,7 +786,7 @@ export default function App() {
         return n; 
       });
     } else {
-      nextNodes = calculateLayout(nextNodes, nextMode);
+      nextNodes = calculateLayout(nextNodes, nextMode, { sentencesOnSeparateLines });
     }
 
     if (hasCache) {
@@ -753,6 +805,15 @@ export default function App() {
     const currentIndex = CONNECTION_MODES.findIndex(m => m.id === connectionMode);
     const nextIndex = (currentIndex + 1) % CONNECTION_MODES.length;
     setConnectionMode(CONNECTION_MODES[nextIndex].id);
+  };
+
+  const toggleSentencesOnSeparateLines = () => {
+    const next = !sentencesOnSeparateLines;
+    setSentencesOnSeparateLines(next);
+    const roots = nodes.filter(n => !n.parentId);
+    const children = nodes.filter(n => n.parentId);
+    const laidOut = calculateLayout(roots, viewMode, { sentencesOnSeparateLines: next });
+    setNodes([...laidOut, ...children]);
   };
 
   const callGemini = async (prompt) => {
@@ -970,6 +1031,9 @@ export default function App() {
         const relX = coords.x - leftEdge;
         const zoneIndex = Math.max(0, Math.min(5, Math.floor((relX / wordWidth) * 6)));
         foundSat = SATELLITE_OPTIONS[zoneIndex].id;
+        if (foundTarget !== hoverTarget) {
+          setSatelliteIndentOnRight(zoneIndex < 3);
+        }
       }
       setHoverTarget(foundTarget);
       setSatelliteHover(foundSat);
@@ -1024,7 +1088,7 @@ export default function App() {
           });
           
           const afterGaps = closeGaps(nextNodes, movedRoots, viewMode);
-          const filledNodes = fillLines(afterGaps, viewMode);
+          const filledNodes = fillLines(afterGaps, viewMode, { sentencesOnSeparateLines });
           updateNodes(filledNodes, false); 
         } else {
           updateNodes([...nodes], false);
@@ -1122,7 +1186,7 @@ export default function App() {
                 return;
             }
         }
-        const newNodes = splitTextToNodes(text, viewMode);
+        const newNodes = splitTextToNodes(text, viewMode, { sentencesOnSeparateLines });
         updateNodes(newNodes, true);
         setOffset({ x: 0, y: 0 });
         setScale(1);
@@ -1171,6 +1235,38 @@ export default function App() {
       return { left: minX - padding, top: minY - padding, width: maxX - minX + padding * 2, height: maxY - minY + padding * 2 };
     });
   }, [displayNodes, connectionMode, viewMode]);
+
+  const sentenceRegions = React.useMemo(() => {
+    if (!sentencesOnSeparateLines) return [];
+    const isBook = viewMode === 'book';
+    const rootNodes = displayNodes.filter(n => !n.parentId);
+    if (rootNodes.length === 0) return [];
+    const paddingX = 10;
+    const paddingY = isBook ? 18 : 10;
+    const lineH = isBook ? 14 : 20;
+    const groups = [];
+    let current = [];
+    rootNodes.forEach((n, i) => {
+      current.push(n);
+      if (endsSentence(n.text)) {
+        groups.push([...current]);
+        current = [];
+      }
+    });
+    if (current.length > 0) groups.push(current);
+    return groups.map(sentenceNodes => {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      sentenceNodes.forEach(n => {
+        const w = (estimateWidth(n.text, isBook) * (n.styles?.scale || 1)) / 2;
+        const h = lineH * (n.styles?.scale || 1);
+        minX = Math.min(minX, n.x - w);
+        maxX = Math.max(maxX, n.x + w);
+        minY = Math.min(minY, n.y - h);
+        maxY = Math.max(maxY, n.y + h);
+      });
+      return { left: minX - paddingX, top: minY - paddingY, width: maxX - minX + paddingX * 2, height: maxY - minY + paddingY * 2 };
+    });
+  }, [displayNodes, viewMode, sentencesOnSeparateLines]);
 
   return (
     <div 
@@ -1248,6 +1344,14 @@ export default function App() {
              title={`Connections: ${activeModeLabel}`}
           >
              <ActiveModeIcon className="w-5 h-5"/>
+          </button>
+
+          <button
+            onClick={toggleSentencesOnSeparateLines}
+            className={`p-2 rounded-full transition flex items-center gap-2 ${sentencesOnSeparateLines ? 'bg-indigo-50 text-indigo-600' : 'text-gray-400 hover:text-gray-600'}`}
+            title={sentencesOnSeparateLines ? 'Sentences on separate lines (on)' : 'Sentences on separate lines (off)'}
+          >
+            <List className="w-5 h-5" />
           </button>
           
           <button 
@@ -1390,6 +1494,21 @@ export default function App() {
             </div>
           )}
 
+          {sentencesOnSeparateLines && sentenceRegions.map((r, i) => (
+            <div
+              key={`sentence-bg-${i}`}
+              className="absolute rounded-lg pointer-events-none z-0"
+              style={{
+                left: r.left,
+                top: r.top,
+                width: r.width,
+                height: r.height,
+                background: isBookMode ? 'rgba(215, 201, 168, 0.25)' : 'rgba(226, 232, 240, 0.6)',
+                borderLeft: isBookMode ? '3px solid rgba(139, 94, 60, 0.4)' : '3px solid rgba(99, 102, 241, 0.35)',
+                boxSizing: 'border-box'
+              }}
+            />
+          ))}
           {connectionMode !== 'hidden' && nestedRegions.map((r, i) => (
             <div
               key={`nested-bg-${i}`}
@@ -1529,6 +1648,7 @@ export default function App() {
               nodes={displayNodes} 
               targetId={hoverTarget} 
               satelliteHover={satelliteHover}
+              indentOnRight={satelliteIndentOnRight}
               viewMode={viewMode}
             />
           )}
